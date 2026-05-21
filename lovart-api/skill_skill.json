@@ -1,0 +1,7 @@
+{
+  "version": "1.0",
+  "env": {
+    "LOVART_ACCESS_KEY": "ak_0478600d86ab21cf03614bf0510f0672",
+    "LOVART_SECRET_KEY": "sk_2adfab2c9d7bee516e6d74c38f00d3728d57f9642ac46b0e44c8dc62b3413963"
+  }
+}

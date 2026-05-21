@@ -1,0 +1,147 @@
+version: 1
+last_verified: "2026-04-22"
+mode: reference_only
+
+apply_only_when:
+  - choose based on routing
+  - follow the routing guide
+  - according to the routing guide
+  - 根据路由选择模型
+  - 按路由选模型
+
+priority_order:
+  - explicit_user_model_request
+  - explicit_routing_request
+  - global_rules
+  - task_default
+  - task_fallback
+  - lovart_auto_routing
+
+availability_rule:
+  verify_with: "python3 {baseDir}/agent_skill.py query-mode"
+  if_preferred_unavailable:
+    - use_fallback_alias
+    - if_fallback_unavailable_omit_prefer_models
+
+verified_aliases:
+  IMAGE:
+    - generate_image_gpt_image_1_5
+    - generate_image_gpt_image_2
+    - generate_image_nano_banana
+    - generate_image_nano_banana_2
+    - generate_image_nano_banana_pro
+    - generate_image_midjourney
+    - generate_image_seedream_v4
+    - generate_image_seedream_v4_5
+  VIDEO:
+    - generate_video_kling_v2_6
+    - generate_video_kling_omni_v1
+    - generate_video_wan_v2_6
+
+global_rules:
+  - id: chinese_understanding_first
+    intent:
+      - chinese_text_accuracy
+      - chinese_semantic_nuance
+      - visible_chinese_copy
+      - copy_sensitive_chinese_content
+    default: generate_image_gpt_image_2
+    fallback: generate_image_seedream_v4_5
+
+  - id: chinese_social_aesthetic_first
+    intent:
+      - chinese_platform_style
+      - xiaohongshu_visual_hook
+      - chinese_promotional_cover
+    default: generate_image_seedream_v4_5
+    fallback: generate_image_nano_banana_pro
+
+  - id: atmosphere_or_art_direction_first
+    intent:
+      - mood
+      - cinematic_feel
+      - visual_impact
+      - brand_atmosphere
+    default: generate_image_midjourney
+    fallback: generate_image_nano_banana_pro
+
+  - id: stable_editorial_or_general_purpose_first
+    intent:
+      - general_purpose_content_imagery
+      - editorial_support_image
+      - neutral_default
+    default: generate_image_nano_banana_pro
+    fallback: generate_image_gpt_image_2
+
+  - id: structured_or_clean_design_first
+    intent:
+      - structured_composition
+      - clean_layout_feel
+      - product_design_feel
+    default: generate_image_nano_banana_2
+    fallback: generate_image_nano_banana_pro
+
+  - id: video_default
+    intent:
+      - general_video_generation
+    default: generate_video_kling_v2_6
+    fallback: generate_video_wan_v2_6
+
+  - id: omni_motion_priority
+    intent:
+      - omni_style_motion
+      - complex_motion_behavior
+    default: generate_video_kling_omni_v1
+    fallback: generate_video_kling_v2_6
+
+task_routes:
+  "公众号配图":
+    default: generate_image_nano_banana_pro
+    fallback: generate_image_gpt_image_2
+    promote_rules:
+      - when:
+          - chinese_title
+          - chinese_labels
+          - copy_sensitive_chinese_content
+        use: generate_image_gpt_image_2
+
+  "小红书封面":
+    default: generate_image_seedream_v4_5
+    fallback: generate_image_nano_banana_pro
+    promote_rules:
+      - when:
+          - chinese_text_accuracy_more_important_than_platform_aesthetic
+        use: generate_image_gpt_image_2
+
+  "信息图":
+    default: generate_image_nano_banana_pro
+    fallback: generate_image_nano_banana_2
+    promote_rules:
+      - when:
+          - significant_chinese_text_inside_visual
+        use: generate_image_gpt_image_2
+
+  "写实人物":
+    default: generate_image_gpt_image_2
+    fallback: generate_image_midjourney
+    promote_rules:
+      - when:
+          - atmosphere_more_important_than_instruction_precision
+        use: generate_image_midjourney
+
+  "品牌海报 / KV / 概念海报":
+    default: generate_image_midjourney
+    fallback: generate_image_nano_banana_pro
+    promote_rules:
+      - when:
+          - accurate_chinese_title_or_slogan_required
+        use: generate_image_gpt_image_2
+
+  "短视频":
+    default: generate_video_kling_v2_6
+    fallback: generate_video_wan_v2_6
+    promote_rules:
+      - when:
+          - explicit_complex_motion_request
+          - explicit_omni_style_motion_request
+        use: generate_video_kling_omni_v1
