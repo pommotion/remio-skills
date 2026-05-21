@@ -51,7 +51,7 @@ python scripts/gcli-cover-gen.py --prompt "极简封面提示词" --output ~/Des
 ```
 - 支持 `--aspect`：1:1（默认）、16:9、9:16、4:3、3:4、21:9
 - 支持 `--model` 后缀自动拼接（如 gemini-3.1-flash-image-16x9）
-- API 地址 `http://192.168.50.188:7861`，密钥 `violin`
+- API 地址 `http://${GCLI2API_HOST}:7861`，密钥 `violin`
 - 每张约 90-120 秒，返回 1MB 左右 JPEG
 
 ## 与单点 skill 的关系

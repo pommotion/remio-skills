@@ -12,7 +12,7 @@ import argparse, base64, json, os, sys, time, urllib.request, urllib.error
 
 def generate_image(prompt, output_path, aspect="1:1",
                    model="gemini-3.1-flash-image",
-                   api_url="http://192.168.50.188:7861",
+                   api_url="http://${GCLI2API_HOST}:7861",
                    api_key="violin"):
     """调用 gcli2api Antigravity 端点生成图片"""
     aspect_map = {"1:1":"", "16:9":"-16x9", "9:16":"-9x16", "4:3":"-4x3", "3:4":"-3x4", "21:9":"-21x9"}
@@ -66,7 +66,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True)
     parser.add_argument("--aspect", default="1:1")
     parser.add_argument("--model", default="gemini-3.1-flash-image")
-    parser.add_argument("--api-url", default="http://192.168.50.188:7861")
+    parser.add_argument("--api-url", default="http://${GCLI2API_HOST}:7861")
     parser.add_argument("--api-key", default="violin")
     args = parser.parse_args()
     result = generate_image(args.prompt, args.output, args.aspect, args.model, args.api_url, args.api_key)
