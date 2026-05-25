@@ -16,11 +16,8 @@ description: 文生图与图生图 AI 图片生成工具。使用 BizyAir GPT_IM
 
 ## 前置要求
 
-需要设置 BizyAir API 密钥环境变量：
-
-```bash
-export BIZYAIR_API_KEY='你的API密钥'
-```
+1. **BizyAir API 密钥**：设置环境变量 `BIZYAIR_API_KEY='你的密钥'`
+2. **HTTP 代理（可选）**：如遇到 DNS 污染（`api.bizyair.cn` 被解析到 `198.18.0.x` 保留地址段），设置 `BIZYAIR_PROXY=http://127.0.0.1:7890`。脚本默认自动使用此代理地址，可通过环境变量覆盖；无需代理则设为空：`BIZYAIR_PROXY=''`
 
 ## 重要：API 响应时间说明
 

@@ -91,6 +91,11 @@ if [ "$IMAGE_COUNT" -gt 8 ]; then
 fi
 
 print_info "API密钥已读取: ${API_KEY:0:8}..."
+
+# HTTP 代理（绕过 bizyair.cn DNS 污染；默认 http://127.0.0.1:7890）
+BIZYAIR_PROXY="${BIZYAIR_PROXY:-http://127.0.0.1:7890}"
+PROXY_ARG=(-x "$BIZYAIR_PROXY")
+
 print_info "提示词: $PROMPT"
 print_info "参考图片数量: $IMAGE_COUNT 张"
 print_info "图片比例: $ASPECT_RATIO"
@@ -166,7 +171,7 @@ JSON_PAYLOAD=$(printf "{
 # --connect-timeout: 连接超时 30 秒
 # --max-time: 总请求超时 600 秒（10 分钟），覆盖最慢情况
 print_info "正在等待 API 响应（预计 90秒 ~ 10分钟）..."
-RESPONSE=$(curl -s --connect-timeout 30 --max-time 600 -X POST "https://api.bizyair.cn/w/v1/webapp/task/openapi/create" \
+RESPONSE=$(curl -s "${PROXY_ARG[@]}" --connect-timeout 30 --max-time 600 -X POST "https://api.bizyair.cn/w/v1/webapp/task/openapi/create" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_KEY" \
   -d "$JSON_PAYLOAD")
@@ -215,7 +220,7 @@ OUTPUT_EXT="${OUTPUT_EXT#.}"
 
 OUTPUT_FILE="pic/${DATE}.${OUTPUT_EXT}"
 # 图片下载超时：连接 30 秒，下载 120 秒
-curl -s --connect-timeout 30 --max-time 120 -o "$OUTPUT_FILE" "$IMAGE_URL"
+curl -s "${PROXY_ARG[@]}" --connect-timeout 30 --max-time 120 -o "$OUTPUT_FILE" "$IMAGE_URL"
 
 if [ -f "$OUTPUT_FILE" ]; then
     FILE_SIZE=$(stat -c%s "$OUTPUT_FILE" 2>/dev/null || stat -f%z "$OUTPUT_FILE" 2>/dev/null || wc -c < "$OUTPUT_FILE")

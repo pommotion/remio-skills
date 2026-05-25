@@ -35,8 +35,8 @@ allowed-tools: read, write, search_notes, rag, create_note, update_note, web_sea
 
 | 优先级 | 工具 | 方式 | 说明 |
 |--------|------|------|------|
-| ⭐ **默认** | **gcli2api**（gemini-3.1-flash-image） | `scripts/gcli-cover-gen.py` | 免费，NAS 本地，Antigravity 凭证池 |
-| 回退 A | bozo-aigc（BizyAir GPT_IMAGE_2） | `bozo-aigc` Skill 文生图脚本 | gcli2api 不可用时 |
+| ⭐ **默认** | **bozo-aigc**（BizyAir GPT_IMAGE_2） | `bozo-aigc` Skill | GPT Image 2 文字渲染强，1:1 正方形专辑标准比例 |
+| 回退 A | gcli2api（gemini-3.1-flash-image） | `scripts/gcli-cover-gen.py` | 免费出图快，但文字渲染有时不行 |
 | 回退 B | mmx image | `mmx image generate` | bozo-aigc 也不可用时 |
 | 可选 | Lovart GPT Image 2 | `lovart-api` Skill | 用户指定时 |
 
