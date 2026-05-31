@@ -7,7 +7,7 @@
 ## BeatPrints 海报生成
 
 对每首歌：
-1. 检查 `~/Desktop/📂 音乐/[歌名]/[歌名]_cover.png` 是否存在。不存在则跳过。
+1. 检查 `~/Desktop/📂 音乐/[歌名]/[歌名]_cover.jpg` 是否存在（注意是 .jpg 不是 .png）。不存在则跳过。
 2. 从 mp3 读取真实时长（mutagen）：
 ```python
 from mutagen.mp3 import MP3
@@ -28,7 +28,7 @@ cover_path = os.path.expanduser(f"~/Desktop/📂 音乐/{song_name}/{song_name}_
 output_dir = os.path.expanduser(f"~/Desktop/📂 音乐/{song_name}")
 python = "/Users/wanglingwei/Movies/Github_Projects/BeatPrints/BeatPrints/.venv/bin/python3.13"
 script = "/Users/wanglingwei/Movies/Github_Projects/BeatPrints/BeatPrints/generate_poster.py"
-result = subprocess.run([python, script, "--name", song_name, "--artist", "violin", "--lyrics", lyrics_4lines, "--album", song_name, "--released", "2026", "--duration", duration, "--label", "AI Original", "--theme", "Dark", "--cover-path", cover_path, "--output", output_dir], capture_output=True, text=True, timeout=60)
+result = subprocess.run([python, script, "--name", song_name, "--artist", "王同学", "--lyrics", lyrics_4lines, "--album", song_name, "--released", "2026", "--duration", duration, "--label", "AI Original", "--theme", "Dark", "--accent", "--cover-path", cover_path, "--output", output_dir], capture_output=True, text=True, timeout=60)
 print(result.stdout[-1000:])
 ```
 
