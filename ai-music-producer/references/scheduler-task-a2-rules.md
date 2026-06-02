@@ -36,7 +36,7 @@ result = subprocess.run(cmd, cwd=VAULT, capture_output=True, text=True, timeout=
 print(result.stdout[-2000:])
 ```
 
-封面规格：bozo-aigc (BizyAir GPT Image 2)，1:1 2048×2048。
+封面规格：bizyair-skill (GPT Image 2 via ModelZoo o2-t2i)，1:1 2048×2048。
 
 ---
 

@@ -2,7 +2,7 @@
 """
 Music Vault 封面 Prompt 模板
 融合小小东 #47 一字美学 + #68 丝网印刷风格
-bozo-aigc (BizyAir GPT Image 2) 专用，1:1 2048×2048
+bizyair-skill (GPT Image 2 via ModelZoo o2-t2i) 专用，1:1 2048×2048
 
 用法:
   from cover_prompt import build_cover_prompt

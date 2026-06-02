@@ -126,29 +126,29 @@ MiniMax 专用：
 
 ## 7.8 封面生成
 
-### 默认工具：bozo-aigc（BizyAir GPT_IMAGE_2）
+### 默认工具：bizyair-skill（GPT Image 2 via ModelZoo o2-t2i）
 
-封面生成优先使用 bozo-aigc Skill 的文生图脚本（GPT_IMAGE_2 画质最佳）。
+封面生成优先使用 bizyair-skill 的 modelzoo-run 命令（GPT Image 2 画质最佳）。
 
 ```bash
-# 调用 bozo-aigc 文生图（通过 bash 执行）
-/Users/wanglingwei/skills/bozo-aigc/scripts/text-to-image.sh "[封面描述，中文，包含：风格 + 主色调 + 核心元素 + 无文字无水印]" 1:1
-```
-
-**生成后手动移动文件**：
-```bash
-mv /Users/wanglingwei/skills/bozo-aigc/pic/[最新文件].png ~/Desktop/📂\ 音乐/[歌名]/cover_[歌名].png
+# 通过 bizyair-skill CLI 生成（始终异步，自带轮询，不会重复提交）
+python3 ~/.remio/skills/bizyair-skill/scripts/cli.py modelzoo-run \
+  bza-image-o2-base/text-to-image \
+  --param "prompt=[封面描述，英文，包含：风格 + 主色调 + 核心元素]" \
+  --api-key $BIZYAIR_API_KEY
 ```
 
 **⚠️ 注意**：
-- bozo-aigc 生成耗时 90s~10min，需告知用户耐心等待
+- bizyair-skill 使用 ModelZoo API，始终异步提交（< 5s 返回 request_id），自带轮询
+- 不会因同步超时导致重复提交（之前 bozo-aigc 同步模式的 bug 已修复）
 - 需要 `BIZYAIR_API_KEY` 环境变量已设置
-- 图片默认保存到 `/Users/wanglingwei/skills/bozo-aigc/pic/`
-- 比例固定用 `1:1`（平台封面标准）
+- 需要代理：`export HTTPS_PROXY=http://127.0.0.1:7890`（DNS 污染绕过）
+- 比例固定 `1:1`（平台封面标准），在 prompt 中指定
+- 批量生成推荐使用 `music-vault/regenerate_covers.py`（已适配 bizyair-skill）
 
 ### 回退方案：mmx image
 
-当 bozo-aigc 不可用（`BIZYAIR_API_KEY` 未设置 / API 报错）时：
+当 bizyair-skill 不可用（`BIZYAIR_API_KEY` 未设置 / API 报错）时：
 
 ```bash
 mmx image generate \
