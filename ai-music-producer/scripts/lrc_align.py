@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-lrc_align.py — 歌词同步 LRC 对齐工具
+lrc_align.py — 歌词 LRC 对齐工具（ForcedAligner 版）
 
-使用 DashScope FunASR WebSocket API 做逐字时间戳对齐，输出：
-1. 标准 LRC 文件（.lrc）单歌版本
-2. data/lrc_data.json 全库索引（增量更新）
+通过本地 WSL2 GPU 上的 Qwen3-ForcedAligner-0.6B 服务，一键生成精确 LRC。
+
+核心优势（vs 旧版 FunASR + DTW）：
+- 逐字精确时间戳，不惧 Chorus 重复
+- ~2s/首（vs 旧版 ~35s）
+- 不需要 DashScope API，完全本地
 
 Usage:
     # 对齐单首歌（v1 版本）
@@ -19,264 +22,97 @@ Usage:
     # 强制重新对齐
     python lrc_align.py --song ~/Desktop/📂\ 音乐/六月之后 --version v1 --force
 
-依赖：pip install websockets
-环境变量：DASHSCOPE_API_KEY
+依赖：pip install requests
+环境变量：ASR_URL（默认自动获取 cloudflared tunnel URL）
 """
 
 import argparse
-import asyncio
 import json
 import os
 import re
-import subprocess
 import sys
-import uuid
+import time
 from pathlib import Path
 
-# FunASR WebSocket
 try:
-    import websockets
+    import requests
 except ImportError:
-    websockets = None
-    print("⚠️  websockets 未安装：pip install websockets")
+    print("❌ requests 未安装：pip install requests")
+    sys.exit(1)
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-DASHSCOPE_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
-DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "sk-fe3ef14b490d44628698d98a1cdb6113")
-FFMPEG = "/opt/homebrew/bin/ffmpeg"
+MUSIC_DIR = Path("~/Desktop/📂 音乐").expanduser()
+DATA_DIR = Path(__file__).parent / "data"
 
-# 歌词清洗
-SECTION_PATTERN = re.compile(r'^\[.+\]$')
-PUNCT_PATTERN = re.compile(r'[，。、！？；：""''…—·,.\-!?;:\'\"()\[\]{}\s♫🎵🎶🎼😔]')
+# ─── ASR 服务地址 ────────────────────────────────────────────────────────────
 
+def get_asr_url() -> str:
+    """获取 ForcedAligner 服务地址。优先级：环境变量 > cloudflared tunnel > 局域网。"""
+    # 1. 环境变量
+    url = os.environ.get("ASR_URL", "")
+    if url:
+        return url.rstrip("/")
 
-# ─── FunASR 转写 ──────────────────────────────────────────────────────────────
-
-async def transcribe_audio(mp3_path: str) -> list:
-    """
-    FunASR 转写音频 → 返回带逐字时间戳的句子列表。
-    自动将 mp3 转 mono 16kHz wav（不落盘）。
-    """
-    if websockets is None:
-        print("   ❌ websockets 未安装")
-        return []
-
-    if not os.path.isfile(mp3_path):
-        print(f"   ❌ 音频文件不存在：{mp3_path}")
-        return []
-
-    # ffmpeg 转换 wav（不落盘）
+    # 2. 尝试 cloudflared tunnel（通过 SSH 查询）
     try:
-        proc = subprocess.run(
-            [FFMPEG, "-y", "-i", mp3_path, "-ac", "1", "-ar", "16000", "-f", "wav", "-"],
-            capture_output=True, timeout=60
+        import subprocess
+        result = subprocess.run(
+            ["ssh", "pc", "journalctl -u cloudflared-asr --no-pager | grep -o 'https://[a-z0-9-]*\\.trycloudflare\\.com' | tail -1"],
+            capture_output=True, text=True, timeout=10,
         )
-        audio_data = proc.stdout
-    except Exception as e:
-        print(f"   ❌ ffmpeg 失败：{e}")
-        return []
+        tunnel = result.stdout.strip()
+        if tunnel:
+            # 验证可用
+            try:
+                r = requests.get(f"{tunnel}/api/health", timeout=5, verify=False)
+                if r.status_code == 200:
+                    return tunnel
+            except Exception:
+                pass
+    except Exception:
+        pass
 
-    if not audio_data:
-        print(f"   ❌ 音频转码失败")
-        return []
-
-    task_id = str(uuid.uuid4())
-    sentences = []
-    total = len(audio_data)
-
+    # 3. 局域网直连（需要 Windows 端口转发）
     try:
-        async with websockets.connect(
-            DASHSCOPE_WS_URL,
-            additional_headers={"Authorization": f"Bearer {DASHSCOPE_API_KEY}"},
-            max_size=None, ping_interval=30, ping_timeout=60,
-        ) as ws:
-            await ws.send(json.dumps({
-                "header": {"task_id": task_id, "action": "run-task", "streaming": "duplex"},
-                "payload": {
-                    "task_group": "audio", "task": "asr", "function": "recognition",
-                    "model": "fun-asr-realtime",
-                    "parameters": {
-                        "format": "wav", "sample_rate": 16000,
-                        "language_hints": ["zh"],
-                        "semantic_punctuation_enabled": True,
-                        "heartbeat": True,
-                    },
-                    "input": {},
-                }
-            }))
+        r = requests.get("http://192.168.50.157:7777/api/health", timeout=3)
+        if r.status_code == 200:
+            return "http://192.168.50.157:7777"
+    except Exception:
+        pass
 
-            resp = await asyncio.wait_for(ws.recv(), timeout=30)
-            msg = json.loads(resp)
-            if msg.get("header", {}).get("event") != "task-started":
-                print("   ❌ FunASR 任务未启动")
-                return []
-
-            async def send_audio():
-                offset = 0
-                while offset < total:
-                    await ws.send(audio_data[offset:offset + 32000])
-                    offset += 32000
-                    await asyncio.sleep(0.05)
-                await ws.send(json.dumps({
-                    "header": {"task_id": task_id, "action": "finish-task"}, "payload": {},
-                }))
-
-            async def recv_results():
-                while True:
-                    resp = await asyncio.wait_for(ws.recv(), timeout=120)
-                    msg = json.loads(resp)
-                    event = msg.get("header", {}).get("event")
-                    if event == "result-generated":
-                        sentence = msg.get("payload", {}).get("output", {}).get("sentence", {})
-                        if sentence.get("sentence_end") and not sentence.get("heartbeat"):
-                            words = sentence.get("words", [])
-                            sentences.append({
-                                "text": sentence.get("text", ""),
-                                "begin_ms": sentence.get("begin_time", 0),
-                                "end_ms": sentence.get("end_time", 0),
-                                "words": [
-                                    {"text": w.get("text", ""), "begin_ms": w.get("begin_time", 0), "end_ms": w.get("end_time", 0)}
-                                    for w in words
-                                ],
-                            })
-                    elif event == "task-finished":
-                        return
-                    elif event == "task-failed":
-                        print(f"   ❌ FunASR: {msg.get('header',{}).get('error_message','')}")
-                        return
-
-            await asyncio.gather(send_audio(), recv_results())
-
-    except Exception as e:
-        print(f"   ❌ WebSocket: {e}")
-
-    return sentences
+    print("❌ ForcedAligner 服务不可用。请检查：")
+    print("   1. WSL2 服务是否启动：asr-on")
+    print("   2. cloudflared tunnel 是否运行")
+    sys.exit(1)
 
 
-# ─── 逐字对齐 ────────────────────────────────────────────────────────────────
+# ─── ForcedAligner API ───────────────────────────────────────────────────────
 
-def normalize_for_match(text: str) -> str:
-    """去除标点和空白。"""
-    return PUNCT_PATTERN.sub('', text)
-
-
-def build_char_timeline(asr_sentences: list) -> list:
-    """将 ASR 句子展平为 [{char, time_s}, ...] 时间轴。"""
-    timeline = []
-    for sent in asr_sentences:
-        for w in sent["words"]:
-            char = w["text"].strip()
-            if char and w["begin_ms"] > 0:
-                timeline.append({
-                    "char": char,
-                    "time_s": w["begin_ms"] / 1000.0,
-                })
-    return timeline
+def align_lrc(asr_url: str, audio_path: str, lyrics_text: str, language: str = "Chinese") -> dict:
+    """调用 ForcedAligner 服务生成 LRC。"""
+    r = requests.post(
+        f"{asr_url}/api/align/lrc",
+        json={"audio_path": audio_path, "lyrics_text": lyrics_text, "language": language},
+        timeout=120, verify=False,
+    )
+    r.raise_for_status()
+    return r.json()
 
 
-def align_lyrics_word_level(lyrics_lines: list, asr_sentences: list) -> list:
-    """
-    逐字时间戳对齐 → LRC 条目列表。
-    策略：滑动窗口 + SequenceMatcher 模糊匹配。
-    """
-    timeline = build_char_timeline(asr_sentences)
-    if not timeline:
-        return []
-
-    asr_text = ''.join(c["char"] for c in timeline)
-    asr_norm = normalize_for_match(asr_text)
-
-    lrc_entries = []
-    asr_search_start = 0
-
-    for line in lyrics_lines:
-        norm_line = normalize_for_match(line)
-
-        # 段落标记 [Intro] [Verse] 等
-        if SECTION_PATTERN.match(line):
-            if asr_search_start < len(timeline):
-                lrc_entries.append({
-                    'time': round(timeline[asr_search_start]["time_s"], 2),
-                    'text': line,
-                })
-            elif lrc_entries:
-                lrc_entries.append({'time': lrc_entries[-1]['time'], 'text': line})
-            else:
-                lrc_entries.append({'time': 0.0, 'text': line})
-            continue
-
-        if not norm_line:
-            continue
-
-        # 在 ASR 文本中找最佳匹配位置
-        best_pos = -1
-        best_score = 0
-        search_window = min(80, len(timeline) - asr_search_start)
-        for offset in range(0, search_window):
-            for length in range(min(len(norm_line), 12), max(2, len(norm_line) - 8), -1):
-                subseq = norm_line[:length]
-                # 在 asr_norm 中从当前位置开始找
-                idx = asr_norm.find(subseq, asr_search_start)
-                if idx < 0:
-                    continue
-                # 简单评分：子串长度 / (位置偏移)
-                pos_penalty = 1.0 - (idx - asr_search_start) * 0.001
-                score = length * pos_penalty
-                if score > best_score:
-                    best_score = score
-                    best_pos = idx
-
-        if best_pos >= 0:
-            # 找到对应的时间戳
-            lrc_time = timeline[best_pos]["time_s"] if best_pos < len(timeline) else (timeline[-1]["time_s"] if timeline else 0)
-            lrc_entries.append({'time': round(lrc_time, 2), 'text': line})
-            asr_search_start = best_pos + len(norm_line) // 2
-        else:
-            # 找不到匹配，用上一行时间
-            if lrc_entries:
-                lrc_entries.append({'time': lrc_entries[-1]['time'], 'text': line})
-            else:
-                lrc_entries.append({'time': 0.0, 'text': line})
-
-    return lrc_entries
+def check_health(asr_url: str) -> dict:
+    """健康检查。"""
+    r = requests.get(f"{asr_url}/api/health", timeout=10, verify=False)
+    r.raise_for_status()
+    return r.json()
 
 
-# ─── LRC 输出 ────────────────────────────────────────────────────────────────
+# ─── 文件查找 ─────────────────────────────────────────────────────────────────
 
-def format_lrc_time(seconds: float) -> str:
-    """[mm:ss.xx]"""
-    m = int(seconds // 60)
-    s = seconds - m * 60
-    return f"[{m:02d}:{s:05.2f}]"
-
-
-def write_lrc_file(entries: list, output_path: str, metadata: dict = None) -> None:
-    """写入标准 LRC 文件。"""
-    header_lines = [
-        "[ti:{}]".format(metadata.get('title', '')),
-        "[ar:{}]".format(metadata.get('artist', 'Violin')),
-        "[al:{}]".format(metadata.get('album', 'AI 原创歌曲 · 作品集')),
-        "[by:{}]".format(metadata.get('generator', 'FunASR + lrc_align.py')),
-    ]
-
-    with open(output_path, 'w', encoding='utf-8') as f:
-        for h in header_lines:
-            f.write(h + '\n')
-        for e in entries:
-            f.write(f"{format_lrc_time(e['time'])}{e['text']}\n")
-
-    size = os.path.getsize(output_path)
-    print(f"   ✅ LRC 写入：{output_path} ({size} B, {len(entries)} 行)")
-
-
-# ─── 单歌处理 ────────────────────────────────────────────────────────────────
-
-def find_lyrics_file(song_dir: str) -> str:
+def find_lyrics_file(song_dir: Path) -> str:
     """查找歌词文件。优先级：_clean.txt > _lyrics.txt > *.txt"""
-    d = Path(song_dir)
     candidates = []
-    for f in sorted(d.iterdir()):
+    for f in sorted(song_dir.iterdir()):
         name = f.name.lower()
         if not f.is_file() or not name.endswith('.txt'):
             continue
@@ -289,23 +125,19 @@ def find_lyrics_file(song_dir: str) -> str:
     return candidates[0] if candidates else ""
 
 
-def find_mp3_for_version(song_dir: str, version: str) -> str:
+def find_mp3_for_version(song_dir: Path, version: str) -> str:
     """查找指定版本的 mp3。"""
-    d = Path(song_dir)
-    matches = []
-    for f in d.iterdir():
-        name = f.name.lower()
-        if not f.is_file() or not name.endswith('.mp3'):
+    for f in sorted(song_dir.iterdir()):
+        if not f.is_file() or not f.name.lower().endswith('.mp3'):
             continue
-        if f"_v{version[1:]}" in name or version in name:
-            matches.append(str(f))
-    return matches[0] if matches else ""
+        if f"_v{version[1:]}" in f.name or version in f.name:
+            return str(f)
+    return ""
 
 
-def find_all_mp3(song_dir: str) -> list:
+def find_all_mp3(song_dir: Path) -> list:
     """查找所有 mp3。"""
-    d = Path(song_dir)
-    return sorted([str(f) for f in d.iterdir() if f.is_file() and f.name.lower().endswith('.mp3')])
+    return sorted([str(f) for f in song_dir.iterdir() if f.is_file() and f.name.lower().endswith('.mp3')])
 
 
 def extract_version_tag(mp3_path: str) -> str:
@@ -314,20 +146,49 @@ def extract_version_tag(mp3_path: str) -> str:
     return f"v{m.group(1)}" if m else "v1"
 
 
-def process_one(song_dir: str, version: str, output_lrc_path: str = "", force: bool = False) -> dict:
-    """
-    处理一首歌的某个版本。
-    返回：{'time': 秒, 'entries': [...]}
-    """
-    song_dir = str(Path(song_dir).expanduser())
-    song_name = Path(song_dir).name
+# ─── LRC 索引 ─────────────────────────────────────────────────────────────────
 
-    if not output_lrc_path:
-        output_lrc_path = os.path.join(song_dir, f"{song_name}_{version}.lrc")
+def load_lrc_data() -> dict:
+    """加载 lrc_data.json。"""
+    lrc_json = DATA_DIR / "lrc_data.json"
+    if lrc_json.exists():
+        with open(lrc_json, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+
+def save_lrc_data(data: dict) -> None:
+    """保存 lrc_data.json。"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lrc_json = DATA_DIR / "lrc_data.json"
+    with open(lrc_json, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def parse_lrc_text(lrc_text: str) -> list:
+    """将 LRC 文本解析为 [{time, text}, ...] 列表。"""
+    entries = []
+    for line in lrc_text.strip().split("\n"):
+        m = re.match(r'\[(\d{2}:\d{2}\.\d{2})\]\s*(.*)', line)
+        if m:
+            time_str, text = m.groups()
+            parts = time_str.split(":")
+            secs = int(parts[0]) * 60 + float(parts[1])
+            entries.append({"time": round(secs, 2), "text": text})
+    return entries
+
+
+# ─── 单歌处理 ────────────────────────────────────────────────────────────────
+
+def process_one(asr_url: str, song_dir: str, version: str, force: bool = False) -> dict:
+    """处理一首歌的一个版本。返回结果或 None。"""
+    song_dir = Path(song_dir).expanduser()
+    song_name = song_dir.name
+    output_lrc = str(song_dir / f"{song_name}_{version}.lrc")
 
     # 跳过已存在
-    if os.path.isfile(output_lrc_path) and not force:
-        print(f"   ⏭️  LRC 已存在（--force 重新生成）：{output_lrc_path}")
+    if os.path.isfile(output_lrc) and not force:
+        print(f"   ⏭️  LRC 已存在：{output_lrc}")
         return None
 
     # 1. 找歌词 + mp3
@@ -338,88 +199,83 @@ def process_one(song_dir: str, version: str, output_lrc_path: str = "", force: b
 
     mp3_file = find_mp3_for_version(song_dir, version)
     if not mp3_file:
-        print(f"   ❌ 未找到 mp3：{song_dir} (v{version})")
+        print(f"   ❌ 未找到 mp3：{song_dir} ({version})")
         return None
-
-    print(f"   🎙️  FunASR 转写：{Path(mp3_file).name} ({os.path.getsize(mp3_file) // 1024} KB)")
 
     # 2. 读取歌词
     with open(lyrics_file, 'r', encoding='utf-8') as f:
-        lyrics_lines = [line.strip() for line in f.readlines() if line.strip()]
+        lyrics_text = f.read()
 
-    # 3. ASR 转写
-    import time
-    start = time.time()
-    asr_sentences = asyncio.run(transcribe_audio(mp3_file))
-    elapsed = time.time() - start
-    print(f"   ⏱️  ASR 耗时：{elapsed:.1f}s, 识别 {len(asr_sentences)} 句")
+    # 3. 判断 mp3 路径在 WSL 还是 Mac
+    # ForcedAligner 服务在 WSL 上，需要 WSL 路径
+    # 如果 mp3 在 Mac 上，需要用 base64 传输
+    mac_path = str(mp3_file)
+    
+    # 检查 ASR 服务是否能直接访问文件（同机器用路径，否则 base64）
+    payload = {"lyrics_text": lyrics_text, "language": "Chinese"}
+    
+    # 尝试本地路径（如果 asr_url 是局域网/tunnel，文件在 Mac 上，服务在 WSL 上）
+    # WSL 可以通过 /mnt/c/ 访问 Windows 文件，但 Mac 文件不行
+    # 所以对于远程服务，必须用 base64
+    if "127.0.0.1" in asr_url or "localhost" in asr_url:
+        payload["audio_path"] = mac_path
+    else:
+        # 远程服务：base64 编码
+        import base64
+        with open(mac_path, 'rb') as f:
+            audio_b64 = base64.b64encode(f.read()).decode()
+        payload["audio_base64"] = audio_b64
 
-    if not asr_sentences:
-        print(f"   ❌ FunASR 转写失败")
+    print(f"   🎙️  ForcedAligner 对齐：{Path(mp3_file).name} ({os.path.getsize(mp3_file) // 1024} KB)")
+
+    t0 = time.time()
+    try:
+        r = requests.post(f"{asr_url}/api/align/lrc", json=payload, timeout=120, verify=False)
+        r.raise_for_status()
+        result = r.json()
+    except Exception as e:
+        print(f"   ❌ ForcedAligner 失败：{e}")
         return None
 
-    # 4. 对齐
-    entries = align_lyrics_word_level(lyrics_lines, asr_sentences)
-    print(f"   🔗 对齐完成：{len(entries)}/{len(lyrics_lines)} 行")
+    elapsed = time.time() - t0
 
-    if not entries:
+    lrc_text = result.get("lrc", "")
+    if not lrc_text:
+        print(f"   ❌ LRC 为空")
         return None
 
-    # 5. 写 LRC
-    write_lrc_file(entries, output_lrc_path, metadata={
-        'title': song_name,
-        'generator': f'FunASR + lrc_align.py ({elapsed:.1f}s)',
-    })
+    # 4. 写 LRC 文件
+    with open(output_lrc, 'w', encoding='utf-8') as f:
+        f.write(lrc_text)
+
+    size = os.path.getsize(output_lrc)
+    lines = result.get("lines", 0)
+    print(f"   ✅ LRC 写入：{output_lrc} ({size} B, {lines} 行, {elapsed:.1f}s)")
+
+    # 5. 解析为 entries（用于索引）
+    entries = parse_lrc_text(lrc_text)
 
     return {
-        'song_dir': song_dir,
-        'version': version,
-        'mp3': mp3_file,
-        'lrc': output_lrc_path,
-        'entries': entries,
-        'elapsed_s': round(elapsed, 1),
-        'asr_sentences': len(asr_sentences),
+        "song_name": song_name,
+        "version": version,
+        "mp3": str(mp3_file),
+        "lrc": output_lrc,
+        "entries": entries,
+        "elapsed_s": round(elapsed, 1),
     }
 
 
-# ─── 批量 & 索引 ──────────────────────────────────────────────────────────────
+# ─── 批量处理 ────────────────────────────────────────────────────────────────
 
-def update_lrc_index(song_name: str, version: str, entries: list, data_dir: str) -> None:
-    """增量更新 data/lrc_data.json。"""
-    data_dir = Path(data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
-    lrc_json = data_dir / "lrc_data.json"
-
-    lrc_data = {}
-    if lrc_json.exists():
-        with open(lrc_json, 'r', encoding='utf-8') as f:
-            lrc_data = json.load(f)
-
-    key = f"{song_name}__{version}"
-    lrc_data[key] = entries
-
-    with open(lrc_json, 'w', encoding='utf-8') as f:
-        json.dump(lrc_data, f, ensure_ascii=False, indent=2)
-
-    print(f"   📇 索引更新：{key} → data/lrc_data.json")
-
-
-def batch_process(music_dir: str, data_dir: str, force: bool = False) -> dict:
-    """
-    批量处理 ~/Desktop/📂 音乐/ 下所有歌曲。
-    策略：每个歌曲目录每个 mp3 独立生成 LRC。
-    """
-    music_dir = Path(music_dir).expanduser()
-    data_dir = Path(data_dir)
-
+def batch_process(asr_url: str, music_dir: Path, force: bool = False) -> dict:
+    """批量处理所有歌曲。"""
     if not music_dir.exists():
         print(f"❌ 音乐目录不存在：{music_dir}")
         return {}
 
+    lrc_data = load_lrc_data()
     results = {}
     failed = []
-
-    # 跳过 Album Cover 等非歌曲目录
     skip_dirs = {'Album Cover', 'Album Cover .zip', '.git', '.DS_Store'}
 
     for song_dir in sorted(music_dir.iterdir()):
@@ -427,8 +283,7 @@ def batch_process(music_dir: str, data_dir: str, force: bool = False) -> dict:
             continue
 
         song_name = song_dir.name
-        mp3_files = find_all_mp3(str(song_dir))
-
+        mp3_files = find_all_mp3(song_dir)
         if not mp3_files:
             continue
 
@@ -436,24 +291,35 @@ def batch_process(music_dir: str, data_dir: str, force: bool = False) -> dict:
 
         for mp3 in mp3_files:
             version = extract_version_tag(mp3)
-            output_lrc = str(song_dir / f"{song_name}_{version}.lrc")
+            key = f"{song_name}__{version}"
 
-            # 跳过已存在
-            if os.path.isfile(output_lrc) and not force:
-                print(f"⏭️  [{song_name}/{version}] 已存在")
+            # 增量跳过
+            if not force and key in lrc_data:
+                print(f"⏭️  [{song_name}/{version}] 索引已有")
                 continue
 
-            print(f"\n🎵 [{song_name}/{version}] {Path(mp3).name}")
-            result = process_one(str(song_dir), version, output_lrc, force)
+            print(f"\n🎵 [{song_name}/{version}]")
+            result = process_one(asr_url, str(song_dir), version, force)
 
             if result:
-                update_lrc_index(song_name, version, result['entries'], str(data_dir))
-                results[song_name][version] = result['lrc']
+                lrc_data[key] = result["entries"]
+                results[song_name][version] = result["lrc"]
             else:
-                failed.append(f"{song_name}/{version}")
+                # 也检查文件是否存在（可能 process_one 跳过了）
+                lrc_file = str(song_dir / f"{song_name}_{version}.lrc")
+                if os.path.isfile(lrc_file):
+                    with open(lrc_file, 'r', encoding='utf-8') as f:
+                        entries = parse_lrc_text(f.read())
+                    lrc_data[key] = entries
+                    results[song_name][version] = lrc_file
+                else:
+                    failed.append(f"{song_name}/{version}")
 
+    # 保存索引
+    save_lrc_data(lrc_data)
+    total = sum(len(v) for v in results.values())
     print(f"\n{'='*60}")
-    print(f"✅ 完成：{sum(len(v) for v in results.values())} 个 LRC")
+    print(f"✅ 完成：{total} 个 LRC，索引共 {len(lrc_data)} 个版本")
     if failed:
         print(f"❌ 失败：{len(failed)}")
         for f in failed[:10]:
@@ -465,36 +331,77 @@ def batch_process(music_dir: str, data_dir: str, force: bool = False) -> dict:
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="LRC 歌词对齐工具 (FunASR)")
-    parser.add_argument('--song', help='单首歌目录路径（包含 .mp3 和 .txt）')
+    parser = argparse.ArgumentParser(description="LRC 歌词对齐工具 (ForcedAligner)")
+    parser.add_argument('--song', help='单首歌目录路径')
     parser.add_argument('--version', default='v1', help='版本号（默认 v1）')
     parser.add_argument('--all-versions', action='store_true', help='处理所有版本')
-    parser.add_argument('--output', help='LRC 输出路径（默认：{歌名}_{版本}.lrc）')
-    parser.add_argument('--batch', action='store_true', help='批量处理 ~/Desktop/📂 音乐/ 下所有歌曲')
-    parser.add_argument('--music-dir', default='~/Desktop/📂 音乐', help='批量模式下的音乐根目录')
-    parser.add_argument('--data-dir', default='./data', help='lrc_data.json 输出目录')
-    parser.add_argument('--force', action='store_true', help='强制重新生成（覆盖已有）')
-    parser.add_argument('--index-only', action='store_true', help='只更新索引，不生成 LRC')
+    parser.add_argument('--output', help='LRC 输出路径')
+    parser.add_argument('--batch', action='help', help='批量处理 ~/Desktop/📂 音乐/ 下所有歌曲')
+    parser.add_argument('--music-dir', default='~/Desktop/📂 音乐', help='音乐根目录')
+    parser.add_argument('--data-dir', default='', help='lrc_data.json 输出目录')
+    parser.add_argument('--force', action='store_true', help='强制重新生成')
+    parser.add_argument('--rebuild', action='store_true', help='对齐后重建网站')
+    parser.add_argument('--health', action='store_true', help='检查 ForcedAligner 服务状态')
 
     args = parser.parse_args()
 
+    global DATA_DIR
+    if args.data_dir:
+        DATA_DIR = Path(args.data_dir)
+    else:
+        DATA_DIR = Path(__file__).parent / "data"
+
+    # 获取服务地址
+    asr_url = get_asr_url()
+
+    # 健康检查
+    if args.health:
+        health = check_health(asr_url)
+        print(f"✅ 服务正常：{health}")
+        return
+
+    # 确认服务可用
+    try:
+        health = check_health(asr_url)
+        print(f"✅ ForcedAligner 服务：{health['gpu']} ({health['vram_used_gb']}GB VRAM)")
+    except Exception as e:
+        print(f"❌ 服务不可用：{e}")
+        sys.exit(1)
+
     if args.batch:
-        batch_process(args.music_dir, args.data_dir, force=args.force)
+        music_dir = Path(args.music_dir).expanduser()
+        batch_process(asr_url, music_dir, force=args.force)
+        if args.rebuild:
+            import subprocess
+            vault_dir = Path(__file__).parent.parent.parent / "music-vault"
+            if not vault_dir.exists():
+                vault_dir = Path(os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault"))
+            build_py = vault_dir / "build.py"
+            if build_py.exists():
+                print(f"\n🏗️  重建网站...")
+                r = subprocess.run([sys.executable, str(build_py)], capture_output=True, text=True, timeout=120, cwd=str(vault_dir))
+                print(r.stdout[-500:] if r.stdout else "(no output)")
+                if r.returncode != 0:
+                    print(f"⚠️  rebuild 失败: {r.stderr[-500:]}")
+            else:
+                print(f"⚠️  未找到 build.py: {build_py}")
     elif args.song:
-        song_dir = os.path.expanduser(args.song)
+        song_dir = Path(args.song).expanduser()
         if args.all_versions:
             for mp3 in find_all_mp3(song_dir):
                 version = extract_version_tag(mp3)
-                print(f"\n🎵 [{Path(song_dir).name}/{version}]")
-                output = args.output or os.path.join(song_dir, f"{Path(song_dir).name}_{version}.lrc")
-                result = process_one(song_dir, version, output, args.force)
+                print(f"\n🎵 [{song_dir.name}/{version}]")
+                result = process_one(asr_url, str(song_dir), version, args.force)
                 if result:
-                    update_lrc_index(Path(song_dir).name, version, result['entries'], args.data_dir)
+                    lrc_data = load_lrc_data()
+                    lrc_data[f"{song_dir.name}__{version}"] = result["entries"]
+                    save_lrc_data(lrc_data)
         else:
-            output = args.output or os.path.join(song_dir, f"{Path(song_dir).name}_{args.version}.lrc")
-            result = process_one(song_dir, args.version, output, args.force)
+            result = process_one(asr_url, str(song_dir), args.version, args.force)
             if result:
-                update_lrc_index(Path(song_dir).name, args.version, result['entries'], args.data_dir)
+                lrc_data = load_lrc_data()
+                lrc_data[f"{song_dir.name}__{args.version}"] = result["entries"]
+                save_lrc_data(lrc_data)
     else:
         parser.print_help()
 

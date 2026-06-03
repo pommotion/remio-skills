@@ -3,7 +3,7 @@ name: ai-music-producer
 description: "AI 音乐全流程制作——从「我有个想法」到「成品歌 + 上架 + 网站发布」的一站式工作流。11 Phase 覆盖选题→歌词→Prompt→生成→精修→MV→LRC→海报→评分→发布→归档/调度。"
 description_zh: "AI 音乐全流程制作——从灵感到成品歌 + 网站的一站式工作流"
 description_en: "End-to-end AI music production: 11 phases from idea to finished song + LRC + poster + website publish + archive"
-version: 3.0.0
+version: 3.1.0
 allowed-tools: read, write, search_notes, rag, create_note, update_note, web_search, web_fetch, bash, run_python, aapp_call
 ---
 
@@ -52,16 +52,13 @@ allowed-tools: read, write, search_notes, rag, create_note, update_note, web_sea
 
 ### 封面生成
 
+⚠️ **封面 Prompt 必须从歌词提取画面意象**（见 Phase 5.5），禁止套通用模板。
+
 | 优先级 | 工具 | 方式 | 说明 |
 |--------|------|------|------|
-| ⭐ **默认** | **bizyair-skill**（GPT Image 2 via ModelZoo o2-t2i）| `cover_optimize.py` 自动 A/B + fallback | 始终异步，自带轮询；自动选最优；中文标题丝网印刷风格 |
-| 第 2 | gcli2api（gemini-3.1-flash-image）| 同一脚本自动 fallback | bizyair 失败时自动切换 |
-| 第 3 | mmx image | `mmx image generate` | 最后兜底 |
-| 可选 | Lovart GPT Image 2 | `lovart-api` Skill | 用户指定时 |
-
-详见 [cover-optimization.md](./references/cover-optimization.md)。
-
-> ⚠️ **bozo-aigc 已废弃**：同步模式 + 无重试控制 → 超时重试导致重复提交（2026-06-02 2200 2800 积分根因）。`cover_optimize.py` 已统一用 bizyair-skill modelzoo-run（始终异步）。
+| ⭐ **默认** | **bizyair-skill**（GPT Image 2 via ModelZoo o2-t2i）| `cover_optimize.py` 自动 A/B + fallback | 始终异步，自带轮询；自动选最优 |
+| 第 2 | mmx image | `mmx image generate`（sandbox 内需 `node "$MMX"` 前缀）| bizyair 限额时 fallback |
+| 第 3 | Lovart GPT Image 2 | `lovart-api` Skill | 用户指定时 |
 
 ---
 
@@ -249,6 +246,78 @@ Phase 5 分为：
 
 ---
 
+## Phase 5.5: 封面生成 ✅ 强制
+
+**目的**：从歌词核心意象出发，生成 1:1 正方形封面图。
+
+### ⚠️ 跳过条件（避免重复生成）
+
+**在开始生成前，先检查目录中是否已有满意封面：**
+
+```
+检查 ~/Desktop/📂 音乐/[歌名]/ 目录下是否已存在 cover_*.jpg 或 cover_*.png
+如果存在 → 询问用户「已有封面，是否重新生成？」
+  - 用户确认满意 → 跳过，直接进入 Phase 7
+  - 用户要求重做 → 删除旧封面，继续生成
+  - 用户说「每次都跳过」→ 记住偏好，以后自动跳过
+```
+
+**特殊情况**：
+- 批量模式（scheduler task B）：如果封面已存在，**自动跳过**，不询问
+- `--force-cover` 参数：强制重新生成，不检查已有
+
+### ⚠️ 核心流程：歌词 → 画面 → Prompt（禁止跳过）
+
+封面 prompt **必须从歌词中提取具体画面**，不能凭空想象或套用通用模板。
+
+**步骤**：
+1. **提取歌词核心意象**：从歌词中找出 3 个最有画面感的意象（具体的人/物/场景，不要抽象概念）
+2. **选择主画面**：选最有代表性的 1 个意象作为封面主视觉
+3. **写 Prompt**：按 `Scene → Subject → Details → Use case → Constraints` 五段式写 prompt
+4. **强制约束**：prompt 必须包含歌名文字渲染指令（中文歌名用英文引号包裹）
+
+**❌ 禁止**：套用通用模板（如"丝网印刷风+旧纸白书法"）、不用歌词意象、纯抽象描述
+
+**示例**：
+- 歌词"黑板上倒计时的墨水" → prompt: 空教室+黑板粉笔字+黄昏光线+胶片质感
+- 歌词"地铁报站声淹没了耳机线" → prompt: 雨夜地铁+雾气玻璃+手指写字+西装剪影
+- 歌词"把哭声调成静音" → prompt: 手机屏幕上的静音图标+眼泪倒影+深色背景
+
+### Prompt 结构（参考 cover-prompt-templates.md）
+
+```
+Scene: [从歌词提取的具体场景 + 光线 + 时间]
+Subject: [核心意象 + 歌名文字位置和样式]
+Details: [色调/质感/氛围/镜头语言]
+Use case: Album cover, 1:1 square format.
+Constraints: [禁止事项：no 3D / no cute / no frontal faces 等]
+```
+
+### 生成工具
+
+| 优先级 | 工具 | 方式 | 说明 |
+|--------|------|------|------|
+| ⭐ **默认** | **bizyair-skill**（GPT Image 2）| `cover_optimize.py` 自动 A/B + fallback | 中文标题渲染最好 |
+| 第 2 | mmx image | `mmx image generate` | bizyair 限额时的 fallback |
+| 第 3 | Lovart GPT Image 2 | `lovart-api` Skill | 用户指定时 |
+
+mmx 调用方式（sandbox 内需 `node` 前缀）：
+```bash
+MMX=/Users/wanglingwei/Library/Application\ Support/remio/Users/SharedData/runtime/npm-global/bin/mmx
+node "$MMX" image generate --prompt "..." --aspect-ratio 1:1 --out /tmp/cover_歌名.png
+```
+
+### Checkpoint 5.5
+
+```
+封面已生成：[歌名] → cover_歌名.png (1:1, [KB])
+核心意象来源：[引用歌词原文 3 句]
+Prompt 已保存：cover_prompt.txt
+确认后进入 Phase 7 LRC 歌词同步。
+```
+
+---
+
 ## Phase 6: 可选 — MV 制作
 
 如果用户用途涉及视频：
@@ -265,28 +334,28 @@ Phase 5 分为：
 
 **目的**：为每个版本生成精确 LRC 时间轴，用于网站同步显示 + 短视频卡点 + 用户跟唱。
 
+### ForcedAligner 架构（v3.2 升级）
+
+| 引擎 | 原理 | 准确率 | 速度 |
+|------|------|--------|------|
+| **Qwen3-ForcedAligner-0.6B** | 拿已知歌词 + 音频做 forced alignment | **逐字精确** | **~2s/首** |
+
+**vs 旧方案（已废弃）**：Whisper + FunASR + Qwen3-ASR + DTW 三引擎流水线，~35s/首，后半首 Chorus 时间戳崩溃。
+
 ### 工具
 
 ```bash
-# 单首歌（v1 版本）
-python <SKILL_ROOT>/scripts/lrc_align.py \
-  --song "~/Desktop/📂 音乐/六月之后" \
-  --version v1
+# 批量对齐（推荐，增量跳过已有）
+python scripts/lrc_align.py --batch
 
-# 全部版本
-python <SKILL_ROOT>/scripts/lrc_align.py \
-  --song "~/Desktop/📂 音乐/六月之后" \
-  --all-versions
+# 指定歌曲
+python scripts/lrc_align.py --song ~/Desktop/📂\ 音乐/歌名 --version v1
 
-# 批量（增量）
-python <SKILL_ROOT>/scripts/lrc_align.py --batch \
-  --music-dir "~/Desktop/📂 音乐" \
-  --data-dir "<music-vault>/data"
+# 全部重跑
+python scripts/lrc_align.py --batch --force
 
-# 强制重新生成
-python <SKILL_ROOT>/scripts/lrc_align.py \
-  --song "~/Desktop/📂 音乐/六月之后" \
-  --version v1 --force
+# 检查服务状态
+python scripts/lrc_align.py --health
 ```
 
 ### 工作流
@@ -295,47 +364,40 @@ python <SKILL_ROOT>/scripts/lrc_align.py \
 音频文件 (mp3) + 歌词文件 (txt)
         │
         ▼
-   FunASR WebSocket API
-   (DashScope fun-asr-realtime)
+  Qwen3-ForcedAligner-0.6B
+  (WSL2 GPU systemd 常驻, POST /api/align/lrc)
         │
         ▼
-   逐字时间戳 + 句子级时间戳
-        │
-        ▼
-   滑动窗口模糊匹配对齐
-        │
-        ▼
-   LRC 文件 + lrc_data.json 索引
+  LRC 文件 + lrc_data.json 索引
 ```
 
-### 依赖
+### 前置条件
 
-- `pip install websockets`
-- 环境变量 `DASHSCOPE_API_KEY`（默认内嵌 fallback）
-- ffmpeg（macOS 自带）
+- WSL2 ForcedAligner 服务运行中（`asr-on` 启动）
+- `pip install requests`
 
 ### 输出
 
-- `~/Desktop/📂 音乐/六月之后/六月之后_v1.lrc`（标准 LRC 格式）
 - `data/lrc_data.json`（增量更新，key = `歌名__v1`）
+- 每首歌目录下 `{歌名}_{版本}.lrc` 文件
 
 ### 质量验证
 
-- [ ] LRC 文件存在
-- [ ] 行数 ≥ 歌词原文 × 80%
-- [ ] 时间戳递增
-- [ ] 第一段在 60s 内
+- [ ] LRC 行数 ≥ 歌词原文 × 80%
+- [ ] 时间戳单调递增
+- [ ] 第一行歌词在 60s 内
 
 ### 与 music-vault 集成
 
-lrc_data.json 可被 vault.py 直接读取并嵌入网站播放器。
+lrc_data.json 可被 vault.py 直接读取并嵌入网站播放器。对齐后自动 rebuild。
 
 ### Checkpoint 7
 
 ```
 LRC 完成：[歌名/v1: 行数] | [歌名/v2: 行数] | [歌名/v3: 行数]
+引擎: ForcedAligner ✅ (~2s/首)
 索引更新：data/lrc_data.json 共 [N] 个版本
-耗时：总 [X] 分钟
+耗时：总 [X]s
 确认后进入 Phase 8 BeatPrints 海报。
 ```
 
@@ -345,43 +407,50 @@ LRC 完成：[歌名/v1: 行数] | [歌名/v2: 行数] | [歌名/v3: 行数]
 
 ## Phase 8: BeatPrints 海报 ✅ 强制
 
-**目的**：从封面生成 9:16 竖版海报（2280×3480），用于短视频封面、社交媒体推广、音乐网站展示。
+**目的**：用 BeatPrints 项目生成 9:16 竖版海报（2280×3480），包含歌词行、accent 色条、深色主题等专业 Spotify-style 排版。
 
-### 工具
+### ⚠️ 必须使用 BeatPrints 库（禁止用 Pillow 手搓）
+
+BeatPrints（`BeatPrints.poster.Poster`）生成的是专业唱片海报：有歌词行嵌入、信息栏、accent 色条。
+Pillow 手搓的（模糊背景+居中封面+底部文字）完全不是一回事。
+
+**禁止使用**：`beatprint_gen.py`、`vault.py _api_generate_poster`、任何 PIL/Pillow 手搓代码
+
+### 正确命令
 
 ```bash
+# BeatPrints 路径
+BP_PYTHON=/Users/wanglingwei/Movies/Github_Projects/BeatPrints/BeatPrints/.venv/bin/python3.13
+BP_SCRIPT=/Users/wanglingwei/Movies/Github_Projects/BeatPrints/BeatPrints/generate_poster.py
+
 # 单首歌
-python <SKILL_ROOT>/scripts/beatprint_gen.py \
-  --cover "~/Desktop/📂 音乐/六月之后/cover_六月之后.png" \
-  --title "六月之后" \
-  --genre "Pop Rock" \
-  --emotion "倔强" \
-  --duration 192
-
-# 批量
-python <SKILL_ROOT>/scripts/beatprint_gen.py \
-  --from-vault "<music-vault 路径>" \
-  --music-dir "~/Desktop/📂 音乐"
-
-# 强制重新生成
-python <SKILL_ROOT>/scripts/beatprint_gen.py --from-vault <path> --force
+$BP_PYTHON $BP_SCRIPT \
+  --name "歌名" \
+  --artist "王同学" \
+  --lyrics "歌词第1行\n歌词第2行\n歌词第3行\n歌词第4行" \
+  --album "歌名" \
+  --released "2026" \
+  --duration "3:21" \
+  --label "AI Original" \
+  --theme Dark \
+  --accent \
+  --cover-path "~/Desktop/📂 音乐/歌名/cover_歌名.png" \
+  --output "~/Desktop/📂 音乐/歌名/"
 ```
 
-### 设计规范
-
-- **顶部**（0-280px）：纯色留白
-- **封面**（280-2300px）：1920×1920 居中 + 10px 白边 + 圆角
-- **渐变**（2880-3480px）：黑色 200α→0α
-- **标题**（2960-3120px）：120pt 加粗 + 阴影
-- **信息**（3120-3180px）：48pt 常规
+关键参数：
+- `--lyrics`：提取歌词最有画面感的 **4 行**，用 `\n` 拼接
+- `--duration`：从 mp3 用 mutagen 读取真实时长（格式 `M:SS`）
+- `--cover-path`：本地封面文件路径
+- `--theme Dark --accent`：深色主题 + 封面色提取
 
 ### 输出
 
-`{歌名}_poster.png`（与 cover 同目录，2280×3480，约 800-1500KB）
+`{歌名}_poster.png`（与 cover 同目录，2280×3480）
 
 ### 与 music-vault 集成
 
-海报路径会写入 songs.json，vault 网站自动展示。
+海报路径会写入 songs.json，vault 网站自动展示。生成后需要 `build.py extract` 更新索引。
 
 ### Checkpoint 8
 
@@ -694,6 +763,8 @@ aapp_call(
 | 现象 | 原因 | 解决方案 |
 |------|------|----------|
 | FunASR 转写为空 | websockets 未装 / 配额 | `pip install websockets` / 检查 `DASHSCOPE_API_KEY` |
+| Qwen3-ASR API 超时 | 网络问题 / 配额 | 自动 fallback 到纯 FunASR |
+| LRC 文本错误多 | FunASR 文本不准 | 双引擎纠错：Qwen3-ASR + 原歌词 DTW |
 | 海报字体降级 | macOS 字体找不到 | 调整 `FONT_PATHS` 优先级 |
 | lyric-qa pypinyin 警告 | 未装 | `pip install pypinyin`（D4 精度降级）|
 | site_publish 卡住 | vault.py 端口 8892 占用 | `lsof -i :8892` 查杀 |

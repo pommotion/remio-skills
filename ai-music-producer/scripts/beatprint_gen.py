@@ -1,242 +1,114 @@
 #!/usr/bin/env python3
 """
-beatprint_gen.py — BeatPrints 海报生成器
+beatprint_gen.py — BeatPrints 海报生成器（Wrapper）
 
-从歌曲封面生成 9:16 竖版海报（2280×3480），用于：
-- 音乐网站展示
-- 短视频封面
-- 社交媒体推广
+⚠️ v2.0: 本脚本是 BeatPrints 项目的 wrapper，不再用 Pillow 手搓。
+内部调用真正的 BeatPrints 库（BeatPrints.poster.Poster）生成专业海报。
 
-设计：
-- 顶部：居中封面图（带 10px 白色描边框）
-- 底部：标题（120pt）+ 流派/时长/情绪（48pt）
-- 背景：封面图的高斯模糊 + 60% 黑色叠加
-- 底部渐变：黑色从 200 alpha 渐变到 0
+如果 BeatPrints 不可用，会报错退出（不再 fallback 到 Pillow 假海报）。
 
 Usage:
     # 单首歌
-    python beatprint_gen.py --cover ~/Desktop/📂\ 音乐/六月之后/cover_六月之后.png --title "六月之后" --genre "Pop Rock" --duration 192 --emotion "倔强"
+    python beatprint_gen.py --cover ~/path/cover.png --title "歌名" --genre "Pop" --duration 192 --emotion "倔强" --lyrics "歌词第1行\\n歌词第2行\\n歌词第3行\\n歌词第4行"
 
     # 批量（扫描 music-vault 的 songs.json）
     python beatprint_gen.py --from-vault /Users/.../music-vault
 
     # 自定义输出
     python beatprint_gen.py --cover /path/cover.png --title "歌名" --output /path/poster.png
-
-依赖：pip install Pillow
 """
 
 import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
-try:
-    from PIL import Image, ImageFilter, ImageDraw, ImageFont, ImageEnhance
-except ImportError:
-    print("❌ Pillow 未安装：pip install Pillow")
-    sys.exit(1)
+# ─── BeatPrints 路径 ─────────────────────────────────────────────────────────
+
+BP_DIR = Path("/Users/wanglingwei/Movies/Github_Projects/BeatPrints/BeatPrints")
+BP_PYTHON = BP_DIR / ".venv/bin/python3.13"
+BP_SCRIPT = BP_DIR / "generate_poster.py"
 
 
-# ─── Config ───────────────────────────────────────────────────────────────────
-
-POSTER_W, POSTER_H = 2280, 3480
-COVER_TARGET = 1920  # 居中封面大小
-BORDER_PAD = 10
-TOP_OFFSET = 280
-GRADIENT_H = 600
-TEXT_OFFSET_FROM_BOTTOM = 520
-
-# 字体路径优先级
-FONT_PATHS = [
-    '/System/Library/Fonts/STHeiti Medium.ttc',
-    '/System/Library/Fonts/STHeiti Light.ttc',
-    '/System/Library/Fonts/PingFang.ttc',
-    '/System/Library/Fonts/Hiragino Sans GB.ttc',
-    '/Library/Fonts/Arial Unicode.ttf',
-    '/System/Library/Fonts/Supplemental/Songti.ttc',
-    '/System/Library/Fonts/Supplemental/STHeiti Medium.ttc',
-]
-
-
-# ─── Font Loading ─────────────────────────────────────────────────────────────
-
-_font_cache = {}
-
-def load_font(size: int):
-    """加载 macOS 系统字体（带缓存）。"""
-    if size in _font_cache:
-        return _font_cache[size]
-    for fp in FONT_PATHS:
-        if os.path.exists(fp):
-            try:
-                f = ImageFont.truetype(fp, size)
-                _font_cache[size] = f
-                return f
-            except Exception:
-                continue
-    f = ImageFont.load_default()
-    _font_cache[size] = f
-    return f
-
-
-# ─── 核心生成 ────────────────────────────────────────────────────────────────
-
-def format_duration(seconds: int) -> str:
-    """秒数 → m:ss"""
-    if not seconds:
-        return ""
-    return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
-
-
-def generate_poster(
-    cover_path: str,
-    title: str,
-    genre: str = "",
-    emotion: str = "",
-    duration_sec: int = 0,
-    output_path: str = "",
+def call_beatprints(
+    name: str,
+    artist: str = "王同学",
+    lyrics: str = "",
+    album: str = "",
+    released: str = "2026",
+    duration: str = "",
+    label: str = "AI Original",
+    theme: str = "Dark",
+    accent: bool = True,
+    cover_path: str = "",
+    output_dir: str = "",
 ) -> str:
     """
-    从封面生成竖版海报。
-    返回输出路径。
+    调用 BeatPrints generate_poster.py 生成海报。
+    返回输出文件路径。
     """
-    if not os.path.isfile(cover_path):
-        raise FileNotFoundError(f"封面不存在：{cover_path}")
+    if not BP_PYTHON.exists():
+        print(f"❌ BeatPrints Python 不存在：{BP_PYTHON}")
+        print(f"   请确认 BeatPrints 项目已安装在 {BP_DIR}")
+        sys.exit(1)
 
-    if not output_path:
-        # 默认与 cover 同目录，文件名 + _poster
-        cover_dir = os.path.dirname(cover_path)
-        cover_stem = Path(cover_path).stem.replace('cover_', '').replace('cover.', '')
-        output_path = os.path.join(cover_dir, f"{cover_stem}_poster.png")
+    if not BP_SCRIPT.exists():
+        print(f"❌ BeatPrints generate_poster.py 不存在：{BP_SCRIPT}")
+        sys.exit(1)
 
-    print(f"🎨 生成 BeatPrints 海报：{Path(cover_path).name} → {Path(output_path).name}")
+    cmd = [
+        str(BP_PYTHON),
+        str(BP_SCRIPT),
+        "--name", name,
+        "--artist", artist,
+        "--lyrics", lyrics,
+        "--album", album or name,
+        "--released", released,
+        "--duration", duration,
+        "--label", label,
+        "--theme", theme,
+        "--cover-path", cover_path,
+        "--output", output_dir,
+    ]
+    if accent:
+        cmd.append("--accent")
 
-    # EPERM 防护：emoji 路径（📂）在 bash 沙盒会触发 EPERM
-    # 先写到 /tmp，再 shutil.move 到目标
-    import tempfile
-    import shutil
-    staging_path = None
-    try:
-        # 试探性写入目标
-        test_path = output_path + '.write_test'
-        with open(test_path, 'w') as f:
-            f.write('test')
-        os.remove(test_path)
-    except (PermissionError, OSError):
-        # 目标不可写，写到 /tmp
-        staging_path = os.path.join(
-            tempfile.gettempdir(),
-            f"poster_{Path(cover_path).stem}_{int(time.time())}.png"
-        )
-        print(f"   ⚠️  目标不可写（emoji 路径沙盒限制），staging：{staging_path}")
-        output_path = staging_path
+    print(f"🎨 BeatPrints 生成海报：{name}")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
-    # 1. 加载封面
-    cover = Image.open(cover_path).convert('RGBA')
+    if result.returncode != 0:
+        print(f"   ❌ BeatPrints 错误：{result.stderr[-500:]}")
+        return ""
 
-    # 2. 高斯模糊背景
-    bg = cover.resize((POSTER_W, POSTER_H), Image.LANCZOS)
-    bg = bg.filter(ImageFilter.GaussianBlur(radius=40))
-    dark = Image.new('RGBA', (POSTER_W, POSTER_H), (0, 0, 0, 160))
-    bg = Image.alpha_composite(bg, dark)
+    # 从 stdout 找输出路径
+    output = result.stdout.strip()
+    if output:
+        print(f"   ✅ {output}")
 
-    # 3. 居中封面 + 描边
-    cover_resized = cover.resize((COVER_TARGET, COVER_TARGET), Image.LANCZOS)
-    frame_size = COVER_TARGET + BORDER_PAD * 2
-    frame = Image.new('RGBA', (frame_size, frame_size), (255, 255, 255, 60))
-    frame_draw = ImageDraw.Draw(frame)
-    frame_draw.rounded_rectangle(
-        [2, 2, frame_size - 3, frame_size - 3],
-        radius=16,
-        outline=(255, 255, 255, 100),
-        width=2
-    )
-    frame.paste(cover_resized, (BORDER_PAD, BORDER_PAD), cover_resized)
-    cover_x = (POSTER_W - frame_size) // 2
-    bg.paste(frame, (cover_x, TOP_OFFSET), frame)
-
-    # 4. 底部渐变
-    gradient = Image.new('RGBA', (POSTER_W, POSTER_H), (0, 0, 0, 0))
-    grad_draw = ImageDraw.Draw(gradient)
-    grad_y_start = POSTER_H - GRADIENT_H
-    for y in range(GRADIENT_H):
-        alpha = int(200 * (y / GRADIENT_H) ** 1.5)
-        grad_draw.line(
-            [(0, grad_y_start + y), (POSTER_W, grad_y_start + y)],
-            fill=(0, 0, 0, alpha)
-        )
-    bg = Image.alpha_composite(bg, gradient)
-
-    # 5. 文字
-    draw = ImageDraw.Draw(bg)
-    font_large = load_font(120)
-    font_small = load_font(48)
-
-    text_y = POSTER_H - TEXT_OFFSET_FROM_BOTTOM
-
-    if title:
-        bbox = draw.textbbox((0, 0), title, font=font_large)
-        tw = bbox[2] - bbox[0]
-        tx = (POSTER_W - tw) // 2
-        # 阴影
-        draw.text((tx + 4, text_y + 4), title, fill=(0, 0, 0, 200), font=font_large)
-        # 主体
-        draw.text((tx, text_y), title, fill=(255, 255, 255, 240), font=font_large)
-
-    # 信息行
-    info_parts = []
-    if duration_sec:
-        info_parts.append(format_duration(duration_sec))
-    if genre:
-        info_parts.append(genre)
-    if emotion:
-        info_parts.append(emotion)
-
-    if info_parts:
-        info_text = '  ·  '.join(info_parts)
-        bbox2 = draw.textbbox((0, 0), info_text, font=font_small)
-        tw2 = bbox2[2] - bbox2[0]
-        tx2 = (POSTER_W - tw2) // 2
-        info_y = text_y + 160
-        draw.text((tx2, info_y), info_text, fill=(255, 255, 255, 160), font=font_small)
-
-    # 6. 保存
-    bg.convert('RGB').save(output_path, 'PNG', optimize=True)
-    size_kb = os.path.getsize(output_path) // 1024
-    print(f"   ✅ 海报已生成：{output_path} ({size_kb} KB, {POSTER_W}×{POSTER_H})")
-
-    # 如果用了 staging，提示用户手动移动
-    if staging_path:
-        print(f"   📦 staging 路径，需手动移动：")
-        print(f"      mv '{staging_path}' '<目标目录>/'")
-
-    return output_path
+    return output
 
 
 # ─── Vault 批量模式 ──────────────────────────────────────────────────────────
 
 def find_cover_in_song_dir(song_dir: str) -> Optional[str]:
-    """在歌曲目录中查找封面。优先级：cover_{歌名}.* > {歌名}_cover.* > 任意 cover*"""
+    """在歌曲目录中查找封面。"""
     d = Path(song_dir)
     name = d.name
 
-    # 优先级 1: cover_歌名.*
     for ext in ['.png', '.jpg', '.jpeg', '.webp']:
         candidate = d / f"cover_{name}{ext}"
         if candidate.exists():
             return str(candidate)
 
-    # 优先级 2: 歌名_cover.*
     for ext in ['.png', '.jpg', '.jpeg', '.webp']:
         candidate = d / f"{name}_cover{ext}"
         if candidate.exists():
             return str(candidate)
 
-    # 优先级 3: 任意 cover*
     for f in d.iterdir():
         if f.is_file() and f.name.lower().startswith('cover') and f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.webp']:
             return str(f)
@@ -244,10 +116,59 @@ def find_cover_in_song_dir(song_dir: str) -> Optional[str]:
     return None
 
 
+def find_lyrics_file(song_dir: str) -> Optional[str]:
+    """在歌曲目录中查找歌词文件。"""
+    d = Path(song_dir)
+    for f in sorted(d.iterdir()):
+        if 'lyrics' in f.name.lower() and f.suffix == '.txt':
+            return str(f)
+    for f in sorted(d.iterdir()):
+        if f.suffix == '.txt' and not f.name.startswith('.'):
+            return str(f)
+    return None
+
+
+def extract_best_4_lines(lyrics_path: str) -> str:
+    """从歌词文件中提取最有画面感的 4 行。"""
+    try:
+        with open(lyrics_path, 'r', encoding='utf-8') as f:
+            lines = [l.strip() for l in f.readlines() if l.strip()]
+    except Exception:
+        return ""
+
+    # 过滤掉段落标记和太短的行
+    content_lines = [
+        l for l in lines
+        if not re.match(r'^\[.+\]$', l) and len(l) >= 4
+    ]
+
+    if len(content_lines) <= 4:
+        return "\\n".join(content_lines)
+
+    # 简单启发式：选长度适中、有画面感的行
+    # 优先选前 1/3 和中间偏后的行（通常是主歌+副歌）
+    total = len(content_lines)
+    candidates = content_lines[:total//3] + content_lines[total//2:total//2+total//4]
+    if len(candidates) >= 4:
+        # 均匀取 4 行
+        step = len(candidates) // 4
+        selected = [candidates[i * step] for i in range(4)]
+    else:
+        selected = content_lines[:4]
+
+    return "\\n".join(selected)
+
+
+def format_duration(seconds: int) -> str:
+    """秒数 → M:SS"""
+    if not seconds:
+        return ""
+    return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+
 def batch_from_vault(vault_dir: str, music_dir: str, force: bool = False) -> dict:
     """
     从 music-vault 扫描所有歌曲，批量生成海报。
-    跳过已有 _poster.png 的歌曲（增量模式）。
     """
     vault_dir = Path(vault_dir)
     music_dir = Path(music_dir).expanduser()
@@ -271,9 +192,12 @@ def batch_from_vault(vault_dir: str, music_dir: str, force: bool = False) -> dic
         slug = song.get('slug', '')
         title = song.get('title', '')
         song_dir = song.get('dir', '') or str(music_dir / title)
-        cover = song.get('cover', {}).get('path', '') if song.get('cover') else ''
 
-        # 优先用 songs.json 的 cover 字段，没有再扫描目录
+        if not os.path.isdir(song_dir):
+            continue
+
+        # 查封面
+        cover = song.get('cover', {}).get('path', '') if song.get('cover') else ''
         if not cover or not os.path.isfile(cover):
             cover = find_cover_in_song_dir(song_dir)
 
@@ -288,19 +212,21 @@ def batch_from_vault(vault_dir: str, music_dir: str, force: bool = False) -> dic
             skipped += 1
             continue
 
-        # 提取元数据
-        genre = song.get('genre', '')
-        emotion = song.get('emotion', '')
-        duration = song.get('duration', 0)
+        # 提取歌词 4 行
+        lyrics_path = find_lyrics_file(song_dir)
+        lyrics_4 = extract_best_4_lines(lyrics_path) if lyrics_path else title
 
+        # 时长
+        duration = format_duration(song.get('duration', 0))
+
+        # 调用 BeatPrints
         try:
-            generate_poster(
+            call_beatprints(
+                name=title,
+                lyrics=lyrics_4,
+                duration=duration,
                 cover_path=cover,
-                title=title,
-                genre=genre,
-                emotion=emotion,
-                duration_sec=duration,
-                output_path=poster_path,
+                output_dir=song_dir,
             )
             results[title] = poster_path
         except Exception as e:
@@ -321,15 +247,16 @@ def batch_from_vault(vault_dir: str, music_dir: str, force: bool = False) -> dic
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="BeatPrints 竖版海报生成器")
+    parser = argparse.ArgumentParser(description="BeatPrints 海报生成器（Wrapper）")
     parser.add_argument('--cover', help='封面图片路径')
     parser.add_argument('--title', help='歌曲标题')
-    parser.add_argument('--genre', default='', help='流派标签')
-    parser.add_argument('--emotion', default='', help='情感标签')
+    parser.add_argument('--genre', default='', help='流派标签（已忽略，BeatPrints 自动处理）')
+    parser.add_argument('--emotion', default='', help='情感标签（已忽略）')
     parser.add_argument('--duration', type=int, default=0, help='时长（秒）')
-    parser.add_argument('--output', help='输出路径（默认：{歌名}_poster.png）')
-    parser.add_argument('--from-vault', help='从 music-vault 批量生成海报（指定 vault 目录）')
-    parser.add_argument('--music-dir', default='~/Desktop/📂 音乐', help='音乐根目录（批量模式）')
+    parser.add_argument('--lyrics', default='', help='4 行歌词（用 \\n 拼接）')
+    parser.add_argument('--output', help='输出目录（默认：封面同目录）')
+    parser.add_argument('--from-vault', help='从 music-vault 批量生成海报')
+    parser.add_argument('--music-dir', default='~/Desktop/📂 音乐', help='音乐根目录')
     parser.add_argument('--force', action='store_true', help='强制覆盖已有海报')
 
     args = parser.parse_args()
@@ -337,13 +264,13 @@ def main():
     if args.from_vault:
         batch_from_vault(args.from_vault, args.music_dir, force=args.force)
     elif args.cover and args.title:
-        generate_poster(
+        output_dir = args.output or os.path.dirname(args.cover)
+        call_beatprints(
+            name=args.title,
+            lyrics=args.lyrics or args.title,
+            duration=format_duration(args.duration),
             cover_path=args.cover,
-            title=args.title,
-            genre=args.genre,
-            emotion=args.emotion,
-            duration_sec=args.duration,
-            output_path=args.output,
+            output_dir=output_dir,
         )
     else:
         parser.print_help()

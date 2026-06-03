@@ -1,14 +1,15 @@
 # 调度器任务 B 规则集（海报+后处理）
 
-> 本文件由任务 B prompt 引用，包含 BeatPrints 海报、Whisper 转写、歌词对齐、网站重建的具体命令。
+> 本文件由任务 B prompt 引用，包含 BeatPrints 海报、歌词对齐、网站重建的具体命令。
 
 ---
 
 ## BeatPrints 海报生成
 
 对每首歌：
-1. 检查 `~/Desktop/📂 音乐/[歌名]/[歌名]_cover.jpg` 是否存在（注意是 .jpg 不是 .png）。不存在则跳过。
-2. 从 mp3 读取真实时长（mutagen）：
+1. **检查封面是否存在**：`~/Desktop/📂 音乐/[歌名]/cover_*.{jpg,png}`，不存在则跳过海报。
+2. **检查海报是否已存在**：`~/Desktop/📂 音乐/[歌名]/[歌名]_poster.png`，**已存在则跳过**（除非 `--force`）。
+3. 从 mp3 读取真实时长（mutagen）：
 ```python
 from mutagen.mp3 import MP3
 mp3_path = os.path.expanduser(f"~/Desktop/📂 音乐/{song_name}/{song_name}_v1.mp3")
@@ -36,51 +37,72 @@ print(result.stdout[-1000:])
 
 ---
 
-## Whisper 转写
+## 歌词对齐（ForcedAligner）
 
-对每首有 MP3 的歌，检查是否已有 `.fine.json`，没有则转写：
+使用 **Qwen3-ForcedAligner-0.6B** 本地 GPU 服务，替代旧的 Whisper + FunASR + DTW 方案。
 
-```python
-import subprocess, os, glob
-WHISPER_CLI = "/Applications/Memo.app/Contents/Resources/addon/whisper/bin/1.8.4/whisper-cli"
-MODEL = os.path.expanduser("~/Library/Application Support/Memo/models/ggml-large-v3-turbo.bin")
-MUSIC_DIR = os.path.expanduser("~/Desktop/📂 音乐")
-songs = ["歌名1", "歌名2"]  # 替换
-
-for song in songs:
-    song_dir = os.path.join(MUSIC_DIR, song)
-    mp3s = sorted(glob.glob(os.path.join(song_dir, "*.mp3")))
-    for mp3 in mp3s:
-        base = os.path.splitext(os.path.basename(mp3))[0]
-        fine_path = os.path.join(song_dir, f"{base}.fine.json")
-        if os.path.exists(fine_path):
-            continue
-        result = subprocess.run([WHISPER_CLI, "-m", MODEL, "-l", "zh", "-f", mp3, "--output-json-full", "-of", os.path.join(song_dir, base), "-ml", "20", "--split-on-word"], capture_output=True, text=True, timeout=120)
-        raw_json = os.path.join(song_dir, f"{base}.json")
-        if os.path.exists(raw_json) and not os.path.exists(fine_path):
-            os.rename(raw_json, fine_path)
-```
-
-每首约8-12秒。
-
----
-
-## 歌词对齐 + Rebuild 网站
+### 前置检查
 
 ```python
 import subprocess, os, sys
 VAULT_DIR = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault")
 PYTHON = sys.executable
 
+# 检查服务是否运行
+import requests
+try:
+    # 优先尝试获取 tunnel URL
+    result = subprocess.run(
+        ["ssh", "pc", "journalctl -u cloudflared-asr --no-pager | grep -o 'https://[a-z0-9-]*\\.trycloudflare\\.com' | tail -1"],
+        capture_output=True, text=True, timeout=10,
+    )
+    tunnel = result.stdout.strip()
+    if tunnel:
+        r = requests.get(f"{tunnel}/api/health", timeout=5, verify=False)
+        health = r.json()
+        ASR_URL = tunnel
+    else:
+        raise Exception("no tunnel")
+except Exception:
+    # fallback: 局域网
+    try:
+        r = requests.get("http://192.168.50.157:7777/api/health", timeout=3)
+        health = r.json()
+        ASR_URL = "http://192.168.50.157:7777"
+    except Exception:
+        health = None
+        ASR_URL = None
+
+if health:
+    print(f"✅ ForcedAligner: {health['gpu']} ({health['vram_used_gb']}GB)")
+else:
+    print("❌ ForcedAligner 服务不可用，跳过 LRC 对齐")
+```
+
+### 对齐命令
+
+```python
+import subprocess, os, sys
+VAULT_DIR = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault")
+SCRIPT = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/remio/skills/ai-music-producer/scripts/lrc_align.py")
+PYTHON = sys.executable
+
 # 4a: 更新 songs.json
 subprocess.run([PYTHON, os.path.join(VAULT_DIR, "build.py"), "extract"], capture_output=True, text=True, timeout=120, cwd=VAULT_DIR)
 
-# 4b: 歌词对齐（增量）
-subprocess.run([PYTHON, os.path.join(VAULT_DIR, "align_lyrics.py")], capture_output=True, text=True, timeout=120, cwd=VAULT_DIR)
-
-# 4c: rebuild 网站
-subprocess.run([PYTHON, os.path.join(VAULT_DIR, "vault.py"), "build"], capture_output=True, text=True, timeout=120, cwd=VAULT_DIR)
+# 4b: ForcedAligner 歌词对齐（自动获取 tunnel URL，增量处理）
+subprocess.run([PYTHON, SCRIPT, "--batch", "--rebuild"], capture_output=True, text=True, timeout=300, cwd=VAULT_DIR)
 ```
+
+**注意**：`lrc_align.py --batch` 会自动获取 tunnel URL、增量跳过已对齐的歌曲、更新 `lrc_data.json`。
+
+### 性能
+
+| 指标 | 旧方案（Whisper+DTW） | 新方案（ForcedAligner） |
+|------|----------------------|------------------------|
+| 速度 | ~35s/首 | **~2-3s/首** |
+| 准确率 | 后半首 Chorus 崩溃 | **全曲逐字精确** |
+| 依赖 | DashScope API + Whisper | 本地 GPU（1.7GB VRAM） |
 
 ---
 
@@ -99,12 +121,11 @@ req.write(data); req.end();
 🎵 后处理报告 · {日期}
 
 🖼️ 海报: 成功K / 失败L / 跳过M
-🎤 Whisper: 转写N首
-📝 LRC对齐: K个版本
+📝 LRC对齐: K个版本 (ForcedAligner, ~2s/首)
 🏗️ 网站已重建: 总歌曲数首 / 总LRC版本
 
 明细:
-✅ 歌名1: 海报+转写+对齐
+✅ 歌名1: 海报+对齐(ForcedAligner 1.8s)
 ⏭️ 歌名2: 已有LRC
 ❌ 歌名3: 无封面(海报跳过)
 ```

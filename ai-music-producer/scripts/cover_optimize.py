@@ -6,11 +6,16 @@ cover_optimize.py — 封面优化器（A/B 对比 + 多模型 fallback）
 1. 一次生成 2 个候选（不同 prompt 变体）
 2. 用 PIL 提取主色调，做视觉验证
 3. 自动选择得分最高的保存
-4. Fallback 链：bizyair → gcli2api → mmx image
+4. Fallback 链：bizyair (ModelZoo o2-t2i) → gcli2api → mmx image
+
+⚠️ bizyair 调用走 cli.py modelzoo-run 子进程（ModelZoo 异步 API）：
+   POST /x/v1/modelzoo/tasks/openapi/bza-image-o2-base/text-to-image
+   GET  /x/v1/modelzoo/tasks/openapi/{request_id}
+   不是旧版 /w/v1/webapp/task/openapi/create（已废弃，bozo-aigc 同步模式会重复提交）。
 
 Usage:
     # 单首歌（自动选最优）
-    python cover_optimize.py --title "六月之后" --prompt "丝网印刷风..." --output "~/Desktop/📂 音乐/六月之后/cover_六月之后.png"
+    python cover_optimize.py --title "六月之后" --prompt "..." --output "~/Desktop/📂 音乐/六月之后/cover_六月之后.png"
 
     # 批量（从 vault songs.json 读取待生成列表）
     python cover_optimize.py --batch
@@ -151,26 +156,66 @@ def score_cover(image_path: str) -> dict:
 # ─── 提供方调用 ──────────────────────────────────────────────────────────────
 
 def call_bizyair(prompt: str, output_path: str) -> bool:
-    """调用 bizyair-skill GPT Image 2."""
-    try:
-        # bizyair-skill 已通过 update 废弃 bozo-aigc，这里直接调异步 API
-        from bizyair_skill import modelzoo_run
+    """调用 bizyair-skill GPT Image 2 (ModelZoo o2-t2i，异步轮询）。
 
-        result = modelzoo_run(
-            provider="ModelZoo",
-            api_name="o2-t2i",
-            input_values={
-                "4:BizyAir_GPT_IMAGE_2_T2I_API.prompt": prompt,
-                "4:BizyAir_GPT_IMAGE_2_T2I_API.aspect_ratio": "1:1",
-            },
+    正确调用方式：通过 bizyair-skill CLI 的 modelzoo-run 子命令调
+    /x/v1/modelzoo/tasks/openapi/bza-image-o2-base/text-to-image，
+    始终异步（不会同步超时重复提交）。
+    """
+    import subprocess
+
+    # 读取 BIZYAIR_API_KEY
+    api_key = os.environ.get("BIZYAIR_API_KEY", "")
+    if not api_key:
+        r = subprocess.run(
+            ["bash", "-lc", "grep BIZYAIR_API_KEY ~/.zshrc | head -1 | sed 's/.*=//'"],
+            capture_output=True, text=True,
+        )
+        api_key = r.stdout.strip().strip("'\"")
+
+    if not api_key:
+        print("   ⚠️  BIZYAIR_API_KEY 未设置")
+        return False
+
+    BIZYAIR_SKILL_DIR = Path.home() / "Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/remio/skills/bizyair-skill"
+    BIZYAIR_CLI = BIZYAIR_SKILL_DIR / "scripts" / "cli.py"
+    BIZYAIR_ENDPOINT = "bza-image-o2-base/text-to-image"
+
+    cmd = [
+        sys.executable, str(BIZYAIR_CLI),
+        "modelzoo-run", BIZYAIR_ENDPOINT,
+        "--param", f"prompt={prompt}",
+        "--param", "aspect_ratio=1:1",
+        "--param", "resolution=2K",
+        "--api-key", api_key,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=300,
+            cwd=str(BIZYAIR_SKILL_DIR),
         )
 
-        if result.get("status") == "Success" and result.get("outputs"):
-            img_url = result["outputs"][0]["object_url"]
-            # 下载图片
+        # 解析输出：找 bizyair 生成的图片 URL
+        img_url = None
+        for line in result.stdout.split("\n"):
+            line = line.strip()
+            if "bizyair" in line and "http" in line:
+                # 提取 URL
+                for part in line.split():
+                    if part.startswith("http"):
+                        img_url = part
+                        break
+            elif line.startswith("http") and ("image" in line or "s3" in line or "aliyuncs" in line):
+                img_url = line
+
+        if img_url:
             import urllib.request
             urllib.request.urlretrieve(img_url, output_path)
             return True
+
+        print(f"   ⚠️  bizyair 未返回图片 URL: {result.stdout[-200:]}")
+        return False
     except Exception as e:
         print(f"   ⚠️  bizyair 失败：{e}")
     return False
