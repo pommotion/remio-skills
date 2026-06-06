@@ -336,7 +336,7 @@ def main():
     parser.add_argument('--version', default='v1', help='版本号（默认 v1）')
     parser.add_argument('--all-versions', action='store_true', help='处理所有版本')
     parser.add_argument('--output', help='LRC 输出路径')
-    parser.add_argument('--batch', action='help', help='批量处理 ~/Desktop/📂 音乐/ 下所有歌曲')
+    parser.add_argument('--batch', action='store_true', help='批量处理 ~/Desktop/📂 音乐/ 下所有歌曲')
     parser.add_argument('--music-dir', default='~/Desktop/📂 音乐', help='音乐根目录')
     parser.add_argument('--data-dir', default='', help='lrc_data.json 输出目录')
     parser.add_argument('--force', action='store_true', help='强制重新生成')

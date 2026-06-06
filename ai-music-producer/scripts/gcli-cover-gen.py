@@ -9,6 +9,13 @@ gcli2api 图像生成脚本 — 使用群晖 NAS 上的 Antigravity gemini-3.1-f
 
 import argparse, base64, json, os, sys, time, urllib.request, urllib.error
 
+# ── gcli_archive 归档 ──────────────────────────────────────────────────────
+sys.path.insert(0, os.path.expanduser("~/gcli_archive"))
+try:
+    import gcli_archive as _archive
+except ImportError:
+    _archive = None
+
 
 def generate_image(prompt, output_path, aspect="1:1",
                    model="gemini-3.1-flash-image",
@@ -45,6 +52,20 @@ def generate_image(prompt, output_path, aspect="1:1",
                         f.write(img_data)
                     size_kb = len(img_data) / 1024
                     print(f"   ✅ {output_path} ({size_kb:.0f} KB)")
+                    # 归档到 gcli_archive
+                    if _archive:
+                        try:
+                            _archive._upsert_task(
+                                f"cover_{Path(output_path).stem}",
+                                time.strftime("%Y-%m-%dT%H:%M:%S"), prompt,
+                                full_model, endpoint, "success",
+                                image_path=output_path,
+                                file_size_kb=int(size_kb),
+                                duration=time.time()-start,
+                                metadata={"source": "gcli-cover-gen"}
+                            )
+                        except Exception:
+                            pass
                     return {"ok": True, "path": output_path, "size_kb": size_kb, "model": full_model}
             return {"ok": False, "error": "API 未返回图片数据"}
         except urllib.error.HTTPError as e:
