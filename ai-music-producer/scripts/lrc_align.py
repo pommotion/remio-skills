@@ -47,53 +47,136 @@ DATA_DIR = Path(__file__).parent / "data"
 
 # ─── ASR 服务地址 ────────────────────────────────────────────────────────────
 
+def _check_asr_health(url: str, timeout: int = 5) -> bool:
+    """检查 ForcedAligner 健康状态。"""
+    try:
+        r = requests.get(f"{url}/api/health", timeout=timeout, verify=False)
+        if r.status_code == 200:
+            return True
+    except Exception:
+        pass
+    # health 端点可能不存在，检查根路径是否返回 FastAPI 响应
+    try:
+        r = requests.get(f"{url}/", timeout=timeout, verify=False)
+        if r.status_code in (200, 404) and "detail" in r.text:
+            return True  # FastAPI running, / returns {"detail":"Not Found"}
+    except Exception:
+        pass
+    return False
+
+
+def _setup_ssh_tunnel(local_port: int = 9777) -> str | None:
+    """通过 SSH 端口转发连接 WSL2 上的 ForcedAligner。"""
+    import subprocess
+    import socket
+
+    # 检查端口是否已被占用（可能已有 tunnel）
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", local_port))
+        sock.close()
+    except OSError:
+        # 端口已被占用，检查是否可用
+        try:
+            r = requests.get(f"http://localhost:{local_port}/api/health", timeout=3, verify=False)
+            if r.status_code == 200:
+                return f"http://localhost:{local_port}"
+        except Exception:
+            pass
+        # 端口被其他进程占用
+        local_port = local_port + 1
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", local_port))
+            sock.close()
+        except OSError:
+            return None
+
+    # 建立 SSH 隧道
+    try:
+        proc = subprocess.Popen(
+            ["ssh", "-N", "-L", f"{local_port}:localhost:7777", "pc"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1)
+        if proc.poll() is not None:
+            return None  # SSH 失败
+        url = f"http://localhost:{local_port}"
+        if _check_asr_health(url):
+            print(f"  🔗 SSH tunnel: localhost:{local_port} → pc:7777 (pid={proc.pid})")
+            return url
+        proc.terminate()
+        return None
+    except Exception:
+        return None
+
+
 def get_asr_url() -> str:
-    """获取 ForcedAligner 服务地址。优先级：环境变量 > cloudflared tunnel > 局域网。"""
+    """获取 ForcedAligner 服务地址。优先级：环境变量 > 已有 SSH tunnel > cloudflared tunnel > 局域网 > 新建 SSH tunnel。"""
     # 1. 环境变量
     url = os.environ.get("ASR_URL", "")
     if url:
         return url.rstrip("/")
 
-    # 2. 尝试 cloudflared tunnel（通过 SSH 查询）
+    # 2. 已有的 SSH tunnel（localhost:9777）
+    for port in (9777, 9778, 9779):
+        try:
+            if _check_asr_health(f"http://localhost:{port}"):
+                return f"http://localhost:{port}"
+        except Exception:
+            pass
+
+    # 3. cloudflared tunnel（通过 SSH 查询）
     try:
         import subprocess
         result = subprocess.run(
-            ["ssh", "pc", "journalctl -u cloudflared-asr --no-pager | grep -o 'https://[a-z0-9-]*\\.trycloudflare\\.com' | tail -1"],
+            ["ssh", "pc", "journalctl -u cloudflared-asr --no-pager -n 100 | grep -o 'https://[a-z0-9-]*\\.trycloudflare\\.com' | tail -1"],
             capture_output=True, text=True, timeout=10,
         )
         tunnel = result.stdout.strip()
-        if tunnel:
-            # 验证可用
-            try:
-                r = requests.get(f"{tunnel}/api/health", timeout=5, verify=False)
-                if r.status_code == 200:
-                    return tunnel
-            except Exception:
-                pass
+        if tunnel and _check_asr_health(tunnel):
+            return tunnel
     except Exception:
         pass
 
-    # 3. 局域网直连（需要 Windows 端口转发）
+    # 4. 局域网直连（需要 Windows 端口转发）
     try:
-        r = requests.get("http://192.168.50.157:7777/api/health", timeout=3)
-        if r.status_code == 200:
+        if _check_asr_health("http://192.168.50.157:7777", timeout=3):
             return "http://192.168.50.157:7777"
     except Exception:
         pass
 
+    # 5. 自动建立 SSH tunnel
+    url = _setup_ssh_tunnel()
+    if url:
+        return url
+
     print("❌ ForcedAligner 服务不可用。请检查：")
     print("   1. WSL2 服务是否启动：asr-on")
-    print("   2. cloudflared tunnel 是否运行")
+    print("   2. SSH 到 pc 是否可用")
+    print("   3. cloudflared tunnel 是否运行")
     sys.exit(1)
 
 
 # ─── ForcedAligner API ───────────────────────────────────────────────────────
 
 def align_lrc(asr_url: str, audio_path: str, lyrics_text: str, language: str = "Chinese") -> dict:
-    """调用 ForcedAligner 服务生成 LRC。"""
+    """调用 ForcedAligner 服务生成 LRC。自动检测是否需要 base64 传音频。"""
+    import base64
+
+    # 如果 URL 是 localhost 或 cloudflared tunnel，Mac 路径对 WSL2 不可见，需要 base64
+    use_base64 = "localhost" in asr_url or "trycloudflare" in asr_url
+
+    if use_base64:
+        with open(audio_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode()
+        payload = {"audio_base64": audio_b64, "lyrics_text": lyrics_text, "language": language}
+    else:
+        payload = {"audio_path": audio_path, "lyrics_text": lyrics_text, "language": language}
+
     r = requests.post(
         f"{asr_url}/api/align/lrc",
-        json={"audio_path": audio_path, "lyrics_text": lyrics_text, "language": language},
+        json=payload,
         timeout=120, verify=False,
     )
     r.raise_for_status()
@@ -211,20 +294,13 @@ def process_one(asr_url: str, song_dir: str, version: str, force: bool = False) 
     # 如果 mp3 在 Mac 上，需要用 base64 传输
     mac_path = str(mp3_file)
     
-    # 检查 ASR 服务是否能直接访问文件（同机器用路径，否则 base64）
+    # ⚠️ ForcedAligner 在 WSL2 上，Mac 文件路径不可见
+    # 所有连接方式（SSH tunnel / cloudflared / LAN）都是远程，必须 base64
+    import base64
     payload = {"lyrics_text": lyrics_text, "language": "Chinese"}
-    
-    # 尝试本地路径（如果 asr_url 是局域网/tunnel，文件在 Mac 上，服务在 WSL 上）
-    # WSL 可以通过 /mnt/c/ 访问 Windows 文件，但 Mac 文件不行
-    # 所以对于远程服务，必须用 base64
-    if "127.0.0.1" in asr_url or "localhost" in asr_url:
-        payload["audio_path"] = mac_path
-    else:
-        # 远程服务：base64 编码
-        import base64
-        with open(mac_path, 'rb') as f:
-            audio_b64 = base64.b64encode(f.read()).decode()
-        payload["audio_base64"] = audio_b64
+    with open(mac_path, 'rb') as f:
+        audio_b64 = base64.b64encode(f.read()).decode()
+    payload["audio_base64"] = audio_b64
 
     print(f"   🎙️  ForcedAligner 对齐：{Path(mp3_file).name} ({os.path.getsize(mp3_file) // 1024} KB)")
 
@@ -244,9 +320,21 @@ def process_one(asr_url: str, song_dir: str, version: str, force: bool = False) 
         print(f"   ❌ LRC 为空")
         return None
 
-    # 4. 写 LRC 文件
-    with open(output_lrc, 'w', encoding='utf-8') as f:
+    # 4. 写 LRC 文件（通过 /tmp 绕过 macOS EPERM）
+    import subprocess, tempfile, shutil
+    tmp_lrc = os.path.join(tempfile.gettempdir(), f"{song_name}_{version}.lrc")
+    with open(tmp_lrc, 'w', encoding='utf-8') as f:
         f.write(lrc_text)
+    # 复制到目标（/bin/cp 有 Full Disk Access）
+    cp_result = subprocess.run(["/bin/cp", tmp_lrc, output_lrc], capture_output=True, text=True, timeout=10)
+    if cp_result.returncode != 0:
+        # fallback: 直接 write（某些目录没有 provenance）
+        try:
+            with open(output_lrc, 'w', encoding='utf-8') as f:
+                f.write(lrc_text)
+        except PermissionError:
+            print(f"   ❌ 无法写入 {output_lrc}: {cp_result.stderr.strip()}")
+            return None
 
     size = os.path.getsize(output_lrc)
     lines = result.get("lines", 0)
