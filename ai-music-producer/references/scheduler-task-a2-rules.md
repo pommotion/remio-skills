@@ -10,9 +10,9 @@
 - Node路径：`~/.nvm/versions/node/v22.18.0/bin`（必须加入PATH）
 - 命令：`mmx music generate --prompt "风格描述" --lyrics-file 歌词.txt --model music-2.6 --out 输出.mp3`
 
-单首失败不阻塞，超时600s。输出目录：`~/Documents/音乐项目/[歌名]/[歌名]_v1.mp3`
+单首失败不阻塞，超时600s。输出目录：`~/Music/音乐项目/[歌名]/[歌名]_v1.mp3`
 
-⛔ **路径铁律**：音乐目录完整路径是 `~/Documents/音乐项目/`（注意 📂 emoji），绝对不是 `~/Documents/音乐项目/`。创建目录时必须用完整路径。
+⛔ **路径铁律**：音乐目录完整路径是 `~/Music/音乐项目/`。创建目录时必须用完整路径。
 
 ---
 

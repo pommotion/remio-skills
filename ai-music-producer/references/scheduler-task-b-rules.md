@@ -7,12 +7,12 @@
 ## BeatPrints 海报生成
 
 对每首歌：
-1. **检查封面是否存在**：`~/Documents/音乐项目/[歌名]/cover_*.{jpg,png}`，不存在则跳过海报。
-2. **检查海报是否已存在**：`~/Documents/音乐项目/[歌名]/[歌名]_poster.png`，**已存在则跳过**（除非 `--force`）。
+1. **检查封面是否存在**：`~/Music/音乐项目/[歌名]/cover_*.{jpg,png}`，不存在则跳过海报。
+2. **检查海报是否已存在**：`~/Music/音乐项目/[歌名]/[歌名]_poster.png`，**已存在则跳过**（除非 `--force`）。
 3. 从 mp3 读取真实时长（mutagen）：
 ```python
 from mutagen.mp3 import MP3
-mp3_path = os.path.expanduser(f"~/Documents/音乐项目/{song_name}/{song_name}_v1.mp3")
+mp3_path = os.path.expanduser(f"~/Music/音乐项目/{song_name}/{song_name}_v1.mp3")
 if os.path.exists(mp3_path):
     secs = int(MP3(mp3_path).info.length)
     duration = f"{secs//60}:{secs%60:02d}"
@@ -25,8 +25,8 @@ import subprocess, os
 song_name = "歌名"  # 替换
 lyrics_4lines = "第一行\n第二行\n第三行\n第四行"  # 替换
 duration = "2:30"  # 真实时长
-cover_path = os.path.expanduser(f"~/Documents/音乐项目/{song_name}/{song_name}_cover.png")
-output_dir = os.path.expanduser(f"~/Documents/音乐项目/{song_name}")
+cover_path = os.path.expanduser(f"~/Music/音乐项目/{song_name}/{song_name}_cover.png")
+output_dir = os.path.expanduser(f"~/Music/音乐项目/{song_name}")
 python = "/Users/wanglingwei/Movies/Github_Projects/BeatPrints/BeatPrints/.venv/bin/python3.13"
 script = "/Users/wanglingwei/Movies/Github_Projects/BeatPrints/BeatPrints/generate_poster.py"
 result = subprocess.run([python, script, "--name", song_name, "--artist", "王同学", "--lyrics", lyrics_4lines, "--album", song_name, "--released", "2026", "--duration", duration, "--label", "AI Original", "--theme", "Dark", "--accent", "--cover-path", cover_path, "--output", output_dir], capture_output=True, text=True, timeout=60)
