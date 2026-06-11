@@ -183,7 +183,7 @@ aapp_call(aapp_id="scheduler", method="DELETE", path="/tasks/<id>", params={})
 |------|----------|
 | GLM API 限额 | 自动 fallback DeepSeek v4 pro |
 | 配额耗尽 | 跳过当天 |
-| FunASR 失败 | 标记"未对齐"，下次手工补 |
+| ForcedAligner 不可用 | 标记"未对齐"，下次手工补 |
 | remio 笔记 API 异常 | 重试 3 次后跳过 |
 | music-vault 服务端口占用 | 自动检测 `check_serve_running` |
 

@@ -340,7 +340,7 @@ Prompt 已保存：cover_prompt.txt
 |------|------|--------|------|
 | **Qwen3-ForcedAligner-0.6B** | 拿已知歌词 + 音频做 forced alignment | **逐字精确** | **~2s/首** |
 
-**vs 旧方案（已废弃）**：Whisper + FunASR + Qwen3-ASR + DTW 三引擎流水线，~35s/首，后半首 Chorus 时间戳崩溃。
+**vs 旧方案（已废弃）**：DashScope FunASR + Qwen3-ASR + 小米 MiMo 在线 API 流水线，~35s/首，付费，后半首 Chorus 时间戳崩溃。
 
 ### 工具
 
@@ -762,15 +762,13 @@ aapp_call(
 
 | 现象 | 原因 | 解决方案 |
 |------|------|----------|
-| FunASR 转写为空 | websockets 未装 / 配额 | `pip install websockets` / 检查 `DASHSCOPE_API_KEY` |
-| Qwen3-ASR API 超时 | 网络问题 / 配额 | 自动 fallback 到纯 FunASR |
-| LRC 文本错误多 | FunASR 文本不准 | 双引擎纠错：Qwen3-ASR + 原歌词 DTW |
+| ForcedAligner 不可用 | PC/M2 服务未启动 | 检查 PC:7777 和 M2:7778 健康状态 |
+| LRC 对齐失败 | 音频格式不兼容 | 确保 mp3 16kHz mono |
 | 海报字体降级 | macOS 字体找不到 | 调整 `FONT_PATHS` 优先级 |
 | lyric-qa pypinyin 警告 | 未装 | `pip install pypinyin`（D4 精度降级）|
 | site_publish 卡住 | vault.py 端口 8892 占用 | `lsof -i :8892` 查杀 |
 | cover_optimize 反复 fallback | bizyair 限额 | 等 5h 滚动后重跑 |
 | emoji 路径 EPERM | bash 沙盒限制 | 写到 `/tmp` 再 `mv` 到目标 |
-| LRC 末尾歌词无时间 | FunASR 截断 | 调整最后一段 fallback 逻辑 |
 
 ## 参考文档
 

@@ -39,44 +39,43 @@ print(result.stdout[-1000:])
 
 ## 歌词对齐（ForcedAligner）
 
-使用 **Qwen3-ForcedAligner-0.6B** 本地 GPU 服务，替代旧的 Whisper + FunASR + DTW 方案。
+使用 **Qwen3-ForcedAligner-0.6B** 本地 GPU 服务，纯本地对齐，不依赖任何在线 API。
+
+### 架构
+
+- **主服务**: PC WSL2 (RTX 4070 Ti SUPER, 1.7GB VRAM)
+- **Fallback**: M2 Mac mini (MLX/MPS, 16GB 统一内存)
+- 音频 + 已知歌词 → 直接输出 LRC 时间戳，无需 ASR 识别
 
 ### 前置检查
 
 ```python
-import subprocess, os, sys
-VAULT_DIR = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault")
-PYTHON = sys.executable
+import subprocess, os, sys, requests
 
-# 检查服务是否运行
-import requests
+# 检查 PC 服务
+PC_URL = "http://192.168.50.157:7777"
+M2_URL = "http://192.168.50.243:7778"
+
+backend = None
 try:
-    # 优先尝试获取 tunnel URL
-    result = subprocess.run(
-        ["ssh", "pc", "journalctl -u cloudflared-asr --no-pager | grep -o 'https://[a-z0-9-]*\\.trycloudflare\\.com' | tail -1"],
-        capture_output=True, text=True, timeout=10,
-    )
-    tunnel = result.stdout.strip()
-    if tunnel:
-        r = requests.get(f"{tunnel}/api/health", timeout=5, verify=False)
-        health = r.json()
-        ASR_URL = tunnel
-    else:
-        raise Exception("no tunnel")
+    r = requests.get(f"{PC_URL}/api/health", timeout=3)
+    if r.status_code == 200:
+        backend = 'pc'
+        print(f"✅ PC GPU: {r.json()['gpu']}")
 except Exception:
-    # fallback: 局域网
-    try:
-        r = requests.get("http://192.168.50.157:7777/api/health", timeout=3)
-        health = r.json()
-        ASR_URL = "http://192.168.50.157:7777"
-    except Exception:
-        health = None
-        ASR_URL = None
+    pass
 
-if health:
-    print(f"✅ ForcedAligner: {health['gpu']} ({health['vram_used_gb']}GB)")
-else:
-    print("❌ ForcedAligner 服务不可用，跳过 LRC 对齐")
+if not backend:
+    try:
+        r = requests.get(f"{M2_URL}/api/health", timeout=3)
+        if r.status_code == 200:
+            backend = 'm2'
+            print(f"✅ M2 MLX: {r.json()['device']}")
+    except Exception:
+        pass
+
+if not backend:
+    print("❌ 无可用 ForcedAligner 服务，跳过 LRC 对齐")
 ```
 
 ### 对齐命令
@@ -84,25 +83,20 @@ else:
 ```python
 import subprocess, os, sys
 VAULT_DIR = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault")
-SCRIPT = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/remio/skills/ai-music-producer/scripts/lrc_align.py")
 PYTHON = sys.executable
 
-# 4a: 更新 songs.json
-subprocess.run([PYTHON, os.path.join(VAULT_DIR, "build.py"), "extract"], capture_output=True, text=True, timeout=120, cwd=VAULT_DIR)
-
-# 4b: ForcedAligner 歌词对齐（自动获取 tunnel URL，增量处理）
-subprocess.run([PYTHON, SCRIPT, "--batch", "--rebuild"], capture_output=True, text=True, timeout=300, cwd=VAULT_DIR)
+# 增量对齐（自动检测 PC/M2，PC 优先）
+subprocess.run([PYTHON, os.path.join(VAULT_DIR, "funasr_word_align.py")],
+               capture_output=True, text=True, timeout=600, cwd=VAULT_DIR)
 ```
-
-**注意**：`lrc_align.py --batch` 会自动获取 tunnel URL、增量跳过已对齐的歌曲、更新 `lrc_data.json`。
 
 ### 性能
 
-| 指标 | 旧方案（Whisper+DTW） | 新方案（ForcedAligner） |
-|------|----------------------|------------------------|
-| 速度 | ~35s/首 | **~2-3s/首** |
+| 指标 | 旧方案（DashScope ASR+DTW） | 新方案（ForcedAligner） |
+|------|---------------------------|------------------------|
+| 速度 | ~35s/首 | **~2-3s/首 (PC GPU)** / ~30s/首 (M2) |
 | 准确率 | 后半首 Chorus 崩溃 | **全曲逐字精确** |
-| 依赖 | DashScope API + Whisper | 本地 GPU（1.7GB VRAM） |
+| 依赖 | DashScope API（付费） | 本地 GPU（免费） |
 
 ---
 
