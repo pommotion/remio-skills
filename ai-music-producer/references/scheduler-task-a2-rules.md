@@ -10,9 +10,12 @@
 - Node路径：`~/.nvm/versions/node/v22.18.0/bin`（必须加入PATH）
 - 命令：`mmx music generate --prompt "风格描述" --lyrics-file 歌词.txt --model music-2.6 --out 输出.mp3`
 
-单首失败不阻塞，超时600s。输出目录：`~/Music/音乐项目/[歌名]/[歌名]_v1.mp3`
+单首失败不阻塞，超时600s。输出目录：`~/Music/音乐项目/YYYY-MM-DD_歌名/歌名_v1.mp3`
 
-⛔ **路径铁律**：音乐目录完整路径是 `~/Music/音乐项目/`。创建目录时必须用完整路径。
+⛔ **路径铁律**：
+- 音乐目录完整路径是 `~/Music/音乐项目/`。创建目录时必须用完整路径。
+- ⛔ 目录名必须带日期前缀：`YYYY-MM-DD_歌名`（从 pending_audio.json 的 `songs[].song_dir` 读取，不要自行拼接）
+- ⛔ 目录内文件仍用纯歌名命名：`歌名_v1.mp3`、`歌名_lyrics.txt`
 
 ---
 
@@ -37,6 +40,8 @@ print(result.stdout[-2000:])
 ```
 
 封面规格：bizyair-skill (GPT Image 2 via ModelZoo o2-t2i)，1:1 2048×2048。
+
+⛔ 封面脚本传入的 `--songs` 参数用**纯歌名**（不含日期前缀），脚本内部会自动匹配目录。
 
 ---
 

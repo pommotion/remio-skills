@@ -2,6 +2,13 @@
 
 > 目标：把"每天做一首歌"从手动操作变成自动流水线。
 
+> **⚠️ 架构变更（2026-06-14）**：原 11 阶段单体流水线已拆分为 **Task A → Task A' → Task B** 三阶段任务，每个阶段由独立 scheduler 触发、独立的 rules 文件约束。详见：
+> - [scheduler-task-a-rules.md](./scheduler-task-a-rules.md) — 创作+归档（Phase 1-5, 11）
+> - [scheduler-task-a2-rules.md](./scheduler-task-a2-rules.md) — 音频+封面（Phase 4-6）
+> - [scheduler-task-b-rules.md](./scheduler-task-b-rules.md) — 海报+LRC+后处理（Phase 7-10）
+>
+> 本文件保留**总览/调度配置/失败处理/通知**等跨任务通用逻辑，**具体的执行步骤请查阅对应 task rules**。下文 3.1 / 3.2 节的 prompt 模板也对应拆分为三个独立任务。
+
 ## 1. 调度方式选择
 
 | 方式 | 适用场景 | 推荐度 |
@@ -74,69 +81,132 @@ aapp_call(
 
 ## 3. 任务 prompt 模板
 
-### 3.1 完整流程版（推荐）
+### 3.1 三阶段拆分版（推荐，2026-06-14 起）
+
+新架构把原 11 阶段拆成 3 个独立 scheduler 任务，**上一阶段产出 pending_*.json，下一阶段从 pending 文件读取输入**。这样：
+- 每个任务超时独立（Task A 90min，Task A' 60min，Task B 60min）
+- 失败重试粒度更细（封面失败不会拖累归档）
+- 配额耗尽/服务不可用时可以只跳过其中一个阶段
+
+#### 3.1.1 Task A：创作+归档（每天凌晨 1 点）
+
+```python
+aapp_call(
+    aapp_id="scheduler",
+    method="POST",
+    path="/tasks",
+    params={
+        "name": "AI 音乐 · 创作归档 Task A",
+        "schedule": "0 1 * * *",
+        "prompt": """你是 ai-music-producer skill 主管。
+
+请严格按 scheduler-task-a-rules.md 执行 Task A 完整流程：
+- 选题 + 五感素材（Phase 1）
+- 歌词 + 双平台 prompt（Phase 2-3）
+- 精修评分（Phase 5-6）
+- 作品档案笔记（Phase 11）
+- 更新 pending_audio.json（song_dir 指向 ~/Music/音乐项目/YYYY-MM-DD_歌名/）
+
+最后输出 [SCHEDULED_DONE] 歌名 | noteId | 综合评分。""",
+        "model": "sonnet",
+        "timeout_minutes": 90,
+        "notify_on_failure": True,
+    }
+)
+```
+
+#### 3.1.2 Task A'：音频+封面（每天凌晨 2 点）
+
+```python
+aapp_call(
+    aapp_id="scheduler",
+    method="POST",
+    path="/tasks",
+    params={
+        "name": "AI 音乐 · 音频封面 Task A'",
+        "schedule": "0 2 * * *",
+        "prompt": """你是 ai-music-producer skill 主管。
+
+请严格按 scheduler-task-a2-rules.md 执行 Task A' 完整流程：
+- 读取 pending_audio.json 的 songs[]（如为空则跳过当天）
+- 调用 mmx 生成 1-3 个版本
+- 生成封面（bizyair → gcli2api → mmx fallback）
+- 更新 pending_postprocess.json（指向同一个 song_dir）
+
+最后输出 [SCHEDULED_DONE] 歌名 | 状态。""",
+        "model": "sonnet",
+        "timeout_minutes": 60,
+        "notify_on_failure": True,
+    }
+)
+```
+
+#### 3.1.3 Task B：海报+LRC+发布（每天凌晨 3 点）
+
+```python
+aapp_call(
+    aapp_id="scheduler",
+    method="POST",
+    path="/tasks",
+    params={
+        "name": "AI 音乐 · 后处理 Task B",
+        "schedule": "0 3 * * *",
+        "prompt": """你是 ai-music-producer skill 主管。
+
+请严格按 scheduler-task-b-rules.md 执行 Task B 完整流程：
+- 读取 pending_postprocess.json 的 songs[]（如为空则跳过当天）
+- 生成 BeatPrints 海报（2280×3480）
+- LRC 对齐（PC WSL2 GPU 优先，M2 MLX fallback）
+- 4 维质量评分
+- 运行 vault.py build 重新发布
+
+最后输出 [SCHEDULED_DONE] 歌名 | 综合评分。""",
+        "model": "sonnet",
+        "timeout_minutes": 60,
+        "notify_on_failure": True,
+    }
+)
+```
+
+#### 3.1.4 旧版单体 prompt（仅供历史参考，新部署请用 3.1.1-3.1.3）
+
+<details>
+<summary>点击展开：原 11 阶段单体 prompt（已废弃）</summary>
 
 ```
 你是 ai-music-producer skill 主管。请执行完整 11 Phase 流程：
-
-1. Phase 1 选题（10 分钟内）
-   - 优先从你最近的灵感笔记（@[灵感]）中选 1 个主题
-   - 或从场景辞海（@[场景辞海]）随机选 1 个"情绪+场景"组合
-   - 选题要写 1.1 灵感来源 + 1.2 五感素材表
-
-2. Phase 2-3 歌词 + Prompt 构建
-   - 用 2026 ai-music-producer skill 完整工作流
-   - 反陈词滥调（用 lyric-qa skill D1 检测）
-   - 输出双平台 prompt（MiniMax + Suno）
-
-3. Phase 4 音频生成
-   - 用 music-2.6（mmx CLI）
-   - 3 个版本（中速/热血/抒情）
-   - 检查配额（>20% 才会全跑）
-
-4. Phase 5-6 精修 + 视觉化
-   - 3 版 ASR 转写检查
-   - 50 分精修评分
-   - 封面生成（bizyair-skill → gcli2api fallback）
-
-5. Phase 7 LRC 同步
-   - python scripts/lrc_align.py --song ... --all-versions
-
+1. Phase 1 选题 + 五感素材
+2. Phase 2-3 歌词 + 双平台 prompt
+3. Phase 4 音频（music-2.6 mmx）
+4. Phase 5-6 精修 + 封面
+5. Phase 7 LRC（lrc_align.py）
 6. Phase 8 BeatPrints 海报
-   - python scripts/beatprint_gen.py --cover ... --title ... --genre ... --emotion ... --duration ...
-
-7. Phase 9 4 维质量评分
-   - python scripts/lyric_qa.py --lyrics ... --note-id <新建noteId>
-   - 综合分 ≥70 才能进入下一步
-
-8. Phase 10 网站发布
-   - python scripts/site_publish.py --build
-
+7. Phase 9 4 维评分
+8. Phase 10 网站发布（vault.py build）
 9. Phase 11 归档
-   - 创建作品档案笔记（7 大段模板）
-   - 加入 🎵 AI 原创歌曲 · 作品集 collection
-   - 更新 collection 索引
-
-输出格式：
-[SCHEDULED_DONE] 歌名 | noteId | 综合评分 | 状态
 ```
+
+> **为什么不推荐单体**：超时失控、单点失败、配额耗尽拖垮整条线、agent context 撑爆。详见 3.1.1-3.1.3 的拆分版本。
+</details>
 
 ### 3.2 快速版（仅歌词+生成）
 
-```
-你是 ai-music-producer skill 主管。执行"快速做一首歌"模式：
+适合：配额紧张时 / 心情不好想偷懒时。三个任务的 prompt 中将质量阈值从 70 调到 65，跳过某些可选 phase：
 
-1. 跳过 Phase 1 + Checkpoint
-2. Phase 2 歌词（用默认主题：从你最近的笔记中选）
-3. Phase 3 Prompt
-4. Phase 4 音频（1 个版本即可，不跑 3 版）
-5. Phase 7-9 LRC + 海报 + 评分（综合 ≥65 即可）
-6. Phase 11 归档
+#### Task A（快速）
+- 选题跳过 Phase 1 五感素材表，直接从最近笔记中选主题
+- 综合评分阈值 ≥65（默认 70）
+- 其余不变
 
-[SCHEDULED_DONE] 歌名 | noteId
-```
+#### Task A'（快速）
+- 只生成 v1 一个版本（默认跑 v1/v2/v3 三个）
+- 仍需生成封面（封面是网站展示必需）
 
-适合：配额紧张时 / 心情不好想偷懒时。
+#### Task B（快速）
+- 仍跑完整 LRC + 海报 + 评分
+- 评分阈值与 Task A 一致
+
+输出仍按三阶段格式：`[SCHEDULED_DONE] 歌名 | noteId`。
 
 ## 4. 任务监控
 
@@ -221,13 +291,15 @@ aapp_call(
 
 ## 7. 与其他定时任务的关系
 
-music-vault 已有自己的批量处理脚本（`v5_regen.py` 等），但它们是手动触发的。**推荐**：
+**推荐架构**：
 
-- **ai-music-producer 调度**：新歌创作（每天 1 首）
-- **music-vault 调度**：批量重生成封面 / 海报 / 评分（每周日）
+- **ai-music-producer 三阶段调度**（Task A / A' / B）：新歌创作（每天 1 首）
+- **music-vault 批量维护**（每周日）：批量重生成封面 / 海报 / 评分
+
+> **历史说明**：早期的 `v5_regen.py` / `v5_regen_all.py` 已被 `regenerate_covers.py` + `lrc_align.py` + `vault.py build` 取代。如果发现老脚本引用，请删除。
 
 ```python
-# 周日凌晨 3 点批量重生成
+# 周日凌晨 3 点批量重生成（修复型）
 aapp_call(
     aapp_id="scheduler",
     method="POST",
@@ -235,7 +307,13 @@ aapp_call(
     params={
         "name": "music-vault 周末批量维护",
         "schedule": "0 3 * * 0",
-        "prompt": "运行 v5_regen_all.py + beatprint_gen.py --from-vault + site_publish.py --build"
+        "prompt": """执行以下批处理：
+1. python build.py extract  # 重建 songs.json
+2. python regenerate_covers.py --all  # 重生成所有封面（可选：--songs 指定）
+3. python lrc_align.py --force  # 重新对齐所有 LRC
+4. python vault.py build  # 重建网站
+5. python vault.py serve --restart  # 重启静态服务器
+报告：扫描 N 首歌 / 修复 M 个封面 / 补齐 K 个 LRC"""
     }
 )
 ```

@@ -29,13 +29,13 @@
 
 ```bash
 # 增量对齐（推荐）
-python <music-vault>/funasr_word_align.py
+python <music-vault>/lrc_align.py
 
 # 指定歌曲
-python <music-vault>/funasr_word_align.py --songs 发芽 你是一条河
+python <music-vault>/lrc_align.py --songs 发芽 你是一条河
 
 # 全部重跑
-python <music-vault>/funasr_word_align.py --force
+python <music-vault>/lrc_align.py --force
 ```
 
 ## 3. 依赖与环境
@@ -79,7 +79,7 @@ Task B（后处理）调用顺序：
 python <music-vault>/build.py extract
 
 # 4b: ForcedAligner 歌词对齐（自动 rebuild）
-python <music-vault>/funasr_word_align.py
+python <music-vault>/lrc_align.py
 ```
 
 ## 6. 检查点

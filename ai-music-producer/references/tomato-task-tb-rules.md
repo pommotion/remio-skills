@@ -74,7 +74,7 @@ for song in data["songs"]:
 
 ## 歌词对齐（ForcedAligner）
 
-⚠️ **独立内联脚本，不复用 music-vault 的 `funasr_word_align.py`**（该脚本绑定 music-vault 的 songs.json 路径，且不支持 TOMATO_MODE）。
+⚠️ **独立内联脚本，不复用 music-vault 的 `lrc_align.py`**（该脚本绑定 music-vault 的 songs.json 路径，且不支持 TOMATO_MODE）。
 ⚠️ **API 参数名是 `lyrics_text` 不是 `lyrics`**（2026-06-13 踩坑修复）。
 
 ### 完整对齐流程

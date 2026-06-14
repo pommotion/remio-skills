@@ -17,7 +17,10 @@
 - mmx路径：`~/Library/Application Support/remio/Users/SharedData/runtime/npm-global/bin/mmx`
 - Node路径：`~/.nvm/versions/node/v22.18.0/bin`（必须加入PATH）
 - 命令：`mmx music generate --prompt "风格描述" --lyrics-file 歌词.txt --model music-2.6 --out 输出.mp3`
-- ⚠️ **时长要求**：T-A 的 mmx_prompt 已包含 `full length song 3-4 minutes` 指引，目标时长 ≥180s。生成后用 `afinfo` 校验，低于 170s 的重试。
+- ⚠️ **时长要求**：生成后用 `afinfo` 校验。低于阈值的重试 **最多 1 次**，仍不达标则标记 ⚠️ 接受当前版本（不无限重试）。
+  - 曲风阈值（T-A 歌词行数已提标，正常应全部达标）：
+    - `dance` / `viral_pop` / `hometown`：≥150s（快节奏曲风天然偏短）
+    - `sad` / `guofeng`：≥170s
 
 单首失败不阻塞，超时600s。
 
@@ -66,16 +69,37 @@ for song in data["songs"]:
         "--out", out_path
     ], capture_output=True, text=True, timeout=600, env=env)
     
-    # 时长校验
-    if os.path.exists(out_path):
-        af = subprocess.run(['afinfo', out_path], capture_output=True, text=True, timeout=5)
+    # 时长校验 + 最多重试 1 次
+    DURATION_THRESHOLD = {"dance": 150, "viral_pop": 150, "hometown": 150, "sad": 170, "guofeng": 170}
+    
+    def check_duration(path, title, genre_code, attempt=1):
+        if not os.path.exists(path):
+            print(f"❌ {title}: 文件不存在")
+            return False
+        af = subprocess.run(['afinfo', path], capture_output=True, text=True, timeout=5)
         for line in af.stdout.split('\n'):
             if 'estimated duration' in line:
                 secs = round(float(line.split(':')[-1].strip().replace('sec', '').strip()))
-                print(f"{'✅' if secs >= 170 else '⚠️'} {song['title']} → {secs//60}:{secs%60:02d}")
-                break
-    else:
-        print(f"❌ {song['title']}")
+                threshold = DURATION_THRESHOLD.get(genre_code, 170)
+                ok = secs >= threshold
+                print(f"{'✅' if ok else '⚠️'} {title} → {secs//60}:{secs%60:02d} (阈值 {threshold}s, 尝试 {attempt}/2)")
+                return ok
+        return False
+    
+    ok = check_duration(out_path, song['title'], song['genre_code'])
+    if not ok:
+        # 重试 1 次（最多）
+        os.remove(out_path)
+        result2 = subprocess.run([
+            MMX, "music", "generate",
+            "--prompt", song["mmx_prompt"],
+            "--lyrics-file", lyrics_path,
+            "--model", "music-2.6",
+            "--out", out_path
+        ], capture_output=True, text=True, timeout=600, env=env)
+        ok = check_duration(out_path, song['title'], song['genre_code'], attempt=2)
+        if not ok:
+            print(f"   ⚠️ {song['title']} 重试后仍偏短，接受当前版本")
 ```
 
 ---
@@ -96,7 +120,11 @@ for song in data["songs"]:
 | ④ 国风古风 | 水墨 / 扇面 / 古典纹样 / 朱砂 |
 | ⑤ 家乡励志 | 田野 / 老屋 / 暖色调 / 夕阳 |
 
-⚠️ 封面规格：1:1 方形，目标 1024×1024，GPT Image 2 via BizyAir ModelZoo。`generate_one` 已内置 sips center-crop 兜底（下载后自动裁方）。生成后统一缩放到 1024×1024。
+⚠️ 封面规格：1:1 方形，**双文件输出**：
+- **`cover_{title}.jpg`** = 1024×1024（网页版，体积小，用于 tomato.1986318.xyz 网站，不影响加载速度）
+- **`cover_{title}_2048.jpg`** = 2048×2048（上传版，用于番茄音乐平台上传，满足 ≥1440×1440 要求）
+
+GPT Image 2 via BizyAir ModelZoo，`resolution=2K` 直接出 2048×2048。`generate_one` 已内置 sips center-crop 兜底（下载后自动裁方）。
 
 ### 调用方式
 
@@ -141,14 +169,27 @@ for i, song in enumerate(data["songs"]):
 
     tmp_path = f"/tmp/cover_tomato_{title}.jpg"
     result = generate_one(prompt, tmp_path)
+    if not result["ok"]:
+        # 自动重试 1 次
+        print(f"   ⚠️ {title} 封面失败，5s 后重试...")
+        time.sleep(5)
+        result = generate_one(prompt, tmp_path)
+    
     if result["ok"]:
-        # 统一缩放到 1024×1024
-        subprocess.run(['sips', '-z', '1024', '1024', tmp_path],
-                      capture_output=True, timeout=10)
-        shutil.copy2(tmp_path, out_path)
-        print(f"   ✅ {title}: {result['size_kb']}KB (1024×1024)")
+        # API 已直接输出 2048×2048（resolution=2K）
+        # 1. 网页版：缩放到 1024×1024（轻量，不影响网站加载）
+        from PIL import Image
+        img = Image.open(tmp_path)
+        img_1024 = img.resize((1024, 1024), Image.LANCZOS)
+        img_1024.save(out_path, "JPEG", quality=90)  # cover_{title}.jpg = 1024
+        # 2. 上传版：保留原始 2048×2048（满足番茄平台 ≥1440×1440）
+        out_2048 = out_path.replace('.jpg', '_2048.jpg')
+        shutil.copy2(tmp_path, out_2048)              # cover_{title}_2048.jpg = 2048
+        size_1024 = os.path.getsize(out_path) // 1024
+        size_2048 = os.path.getsize(out_2048) // 1024
+        print(f"   ✅ {title}: 1024 ({size_1024}KB) + 2048 ({size_2048}KB)")
     else:
-        print(f"   ❌ {title}: {result['error'][:80]}")
+        print(f"   ❌ {title}: 重试仍失败 - {result['error'][:80]}")
     if i < len(data["songs"]) - 1:
         time.sleep(2)
 ```
