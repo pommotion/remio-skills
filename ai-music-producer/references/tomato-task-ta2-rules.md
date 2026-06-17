@@ -32,47 +32,49 @@
 
 ⚠️ **路径铁律**：目录名必须带日期前缀（从 `tomato_audio.json` 的 `song_dir` 字段读取，不要自行拼接）。
 
-### 逐首生成流程
+### ⚡ 并行生成流程（ThreadPoolExecutor max_workers=5）
+
+> **根因修复（2026-06-17）**：串行 5 首 × 3-5min = 15-25min，叠加封面 ≈ 3min，总逼近 30min RPC 上限。
+> mmx CLI 每个进程是独立 HTTP API 客户端，API 侧无并发限制 → 5 首同时跑，总耗时 ≈ 最慢的一首 ≈ 3-5min。
 
 ```python
 import subprocess, os, json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 VAULT = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/tomato-vault")
 MMX = os.path.expanduser("~/Library/Application Support/remio/Users/SharedData/runtime/npm-global/bin/mmx")
+MMX_ENV = os.environ.copy()
+MMX_ENV["PATH"] = os.path.expanduser("~/.nvm/versions/node/v22.18.0/bin") + ":" + MMX_ENV["PATH"]
+
+DURATION_THRESHOLD = {"dance": 150, "viral_pop": 150, "hometown": 150, "sad": 170, "guofeng": 170}
 
 with open(os.path.join(VAULT, "data/tomato_audio.json")) as f:
     data = json.load(f)
 
+# ---- 准备阶段（串行，快）----
+tasks = []
 for song in data["songs"]:
     song_dir = song["song_dir"]
     os.makedirs(song_dir, exist_ok=True)
-    
-    # 写歌词临时文件
     lyrics_path = os.path.join(song_dir, "lyrics.txt")
     with open(lyrics_path, "w") as f:
         f.write(song["lyrics"])
-    
-    # 生成音频
     out_path = os.path.join(song_dir, f"{song['title']}_v1.mp3")
     if os.path.exists(out_path):
         print(f"⏭️ {song['title']} 已存在，跳过")
         continue
+    tasks.append(song)
+
+# ---- 单首生成函数（供并行调用）----
+def generate_one_song(song):
+    """生成单首音频 + 时长校验 + 最多重试 1 次。返回 (title, success)"""
+    song_dir = song["song_dir"]
+    lyrics_path = os.path.join(song_dir, "lyrics.txt")
+    out_path = os.path.join(song_dir, f"{song['title']}_v1.mp3")
+    title = song['title']
+    genre_code = song['genre_code']
     
-    env = os.environ.copy()
-    env["PATH"] = os.path.expanduser("~/.nvm/versions/node/v22.18.0/bin") + ":" + env["PATH"]
-    
-    result = subprocess.run([
-        MMX, "music", "generate",
-        "--prompt", song["mmx_prompt"],
-        "--lyrics-file", lyrics_path,
-        "--model", "music-2.6",
-        "--out", out_path
-    ], capture_output=True, text=True, timeout=600, env=env)
-    
-    # 时长校验 + 最多重试 1 次
-    DURATION_THRESHOLD = {"dance": 150, "viral_pop": 150, "hometown": 150, "sad": 170, "guofeng": 170}
-    
-    def check_duration(path, title, genre_code, attempt=1):
+    def check_duration(path, attempt=1):
         if not os.path.exists(path):
             print(f"❌ {title}: 文件不存在")
             return False
@@ -86,9 +88,21 @@ for song in data["songs"]:
                 return ok
         return False
     
-    ok = check_duration(out_path, song['title'], song['genre_code'])
+    # 第 1 次生成
+    result = subprocess.run([
+        MMX, "music", "generate",
+        "--prompt", song["mmx_prompt"],
+        "--lyrics-file", lyrics_path,
+        "--model", "music-2.6",
+        "--out", out_path
+    ], capture_output=True, text=True, timeout=600, env=MMX_ENV)
+    
+    if result.returncode != 0:
+        print(f"❌ {title} mmx 失败: {result.stderr[:200]}")
+        return (title, False)
+    
+    ok = check_duration(out_path, attempt=1)
     if not ok:
-        # 重试 1 次（最多）
         os.remove(out_path)
         result2 = subprocess.run([
             MMX, "music", "generate",
@@ -96,10 +110,21 @@ for song in data["songs"]:
             "--lyrics-file", lyrics_path,
             "--model", "music-2.6",
             "--out", out_path
-        ], capture_output=True, text=True, timeout=600, env=env)
-        ok = check_duration(out_path, song['title'], song['genre_code'], attempt=2)
+        ], capture_output=True, text=True, timeout=600, env=MMX_ENV)
+        ok = check_duration(out_path, attempt=2)
         if not ok:
-            print(f"   ⚠️ {song['title']} 重试后仍偏短，接受当前版本")
+            print(f"   ⚠️ {title} 重试后仍偏短，接受当前版本")
+    
+    return (title, os.path.exists(out_path))
+
+# ---- ⚡ 并行生成 5 首 ----
+print(f"\n🎵 并行生成 {len(tasks)} 首音频 (max_workers=5)...")
+with ThreadPoolExecutor(max_workers=5) as pool:
+    futures = {pool.submit(generate_one_song, song): song for song in tasks}
+    for future in as_completed(futures):
+        title, success = future.result()
+        status = "✅" if success else "❌"
+        print(f"{status} {title} 完成")
 ```
 
 ---
@@ -132,6 +157,7 @@ GPT Image 2 via BizyAir ModelZoo，`resolution=2K` 直接出 2048×2048。`gener
 import subprocess, os, json, time, shutil
 from pathlib import Path
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 VAULT_TOMATO = Path.home() / "Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/tomato-vault"
 
@@ -156,42 +182,47 @@ COVER_PROMPTS = {
 with open(VAULT_TOMATO / "data/tomato_audio.json") as f:
     data = json.load(f)
 
-for i, song in enumerate(data["songs"]):
+# ⚡ 并行生成封面（ThreadPoolExecutor）
+# 根因修复：串行 5 首封面 ≈ 10-15min，叠加音频生成极易超时 30min
+# 并行后 5 首同时跑，总耗时 ≈ 最慢的一首 ≈ 2-3min
+def gen_one_cover(song):
+    """单首封面生成 worker（含 1 次重试）"""
     title = song["title"]
     genre_code = song["genre_code"]
     song_dir = song["song_dir"]
     prompt = COVER_PROMPTS[genre_code]
-
     out_path = os.path.join(song_dir, f"cover_{title}.jpg")
     if os.path.exists(out_path):
-        print(f"⏭️  [{i+1}] {title} 封面已存在")
-        continue
-
+        return {"title": title, "ok": True, "skipped": True}
     tmp_path = f"/tmp/cover_tomato_{title}.jpg"
     result = generate_one(prompt, tmp_path)
     if not result["ok"]:
-        # 自动重试 1 次
-        print(f"   ⚠️ {title} 封面失败，5s 后重试...")
         time.sleep(5)
         result = generate_one(prompt, tmp_path)
-    
     if result["ok"]:
-        # API 已直接输出 2048×2048（resolution=2K）
-        # 1. 网页版：缩放到 1024×1024（轻量，不影响网站加载）
         from PIL import Image
         img = Image.open(tmp_path)
         img_1024 = img.resize((1024, 1024), Image.LANCZOS)
-        img_1024.save(out_path, "JPEG", quality=90)  # cover_{title}.jpg = 1024
-        # 2. 上传版：保留原始 2048×2048（满足番茄平台 ≥1440×1440）
+        img_1024.save(out_path, "JPEG", quality=90)
         out_2048 = out_path.replace('.jpg', '_2048.jpg')
-        shutil.copy2(tmp_path, out_2048)              # cover_{title}_2048.jpg = 2048
+        shutil.copy2(tmp_path, out_2048)
         size_1024 = os.path.getsize(out_path) // 1024
         size_2048 = os.path.getsize(out_2048) // 1024
-        print(f"   ✅ {title}: 1024 ({size_1024}KB) + 2048 ({size_2048}KB)")
+        return {"title": title, "ok": True, "msg": f"1024 ({size_1024}KB) + 2048 ({size_2048}KB) in {result['elapsed']:.0f}s"}
     else:
-        print(f"   ❌ {title}: 重试仍失败 - {result['error'][:80]}")
-    if i < len(data["songs"]) - 1:
-        time.sleep(2)
+        return {"title": title, "ok": False, "error": result["error"][:80]}
+
+tasks_batch = [s for s in data["songs"]]
+with ThreadPoolExecutor(max_workers=5) as pool:
+    futures = {pool.submit(gen_one_cover, s): s for s in tasks_batch}
+    for fut in as_completed(futures):
+        r = fut.result()
+        if r.get("skipped"):
+            print(f"⏭️  {r['title']} 封面已存在")
+        elif r["ok"]:
+            print(f"   ✅ {r['title']}: {r['msg']}")
+        else:
+            print(f"   ❌ {r['title']}: {r['error']}")
 ```
 
 ---
