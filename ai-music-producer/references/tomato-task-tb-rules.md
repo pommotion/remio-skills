@@ -186,6 +186,24 @@ else:
 
 ---
 
+## 版权证明自动生成
+
+> 在网站重建之前，为每首歌自动生成版权证明文档。
+> 输出到 `tomato-vault/版权证明/`（⚠️ 不在 `~/Music/番茄音乐/` 内，避免被扫描器误识别为歌曲）。
+
+```python
+import subprocess, os, sys
+VAULT_DIR = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/tomato-vault")
+result = subprocess.run(
+    [sys.executable, os.path.join(VAULT_DIR, "copyright_proof.py")],
+    capture_output=True, text=True, timeout=30, cwd=VAULT_DIR)
+print(result.stdout[-1000:] if result.stdout else "")
+if result.returncode != 0:
+    print(f"⚠️ 版权证明生成失败: {result.stderr[-300:]}")
+```
+
+---
+
 ## 网站重建
 
 ```python

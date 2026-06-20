@@ -246,12 +246,59 @@ style: Chinese folk pop, warm male vocal, acoustic guitar, 100 BPM, nostalgic an
       "bpm": 128,
       "lyrics": "[完整歌词]",
       "mmx_prompt": "mmx风格描述...",
-      "suno_prompt": "suno风格描述..."
+      "suno_prompt": "suno风格描述...",
+      "cover_prompt": "封面提示词（见下方规则）"
     }
     // ... 共 5 首
   ]
 }
 ```
+
+### ⛔ cover_prompt 差异化规则（封面不再雷同）
+
+**问题**：之前 `COVER_PROMPTS` 硬编码为每曲风 1 个模板（广场舞永远霓虹灯+剪影，伤感永远雨夜+冷色调），导致同曲风的封面几乎一模一样。
+
+**规则**：每首歌的 `cover_prompt` 必须**从歌词正文提取 2-3 个具体意象**作为画面核心，而非笼统的曲风描述。同曲风的不同歌画面必须不同。
+
+#### 模板
+
+```
+cover_prompt = [歌名物化为物件] + [歌词中2-3个具体画面元素] + [视觉色调] + [格式约束]
+```
+
+#### 正确 vs 错误示例
+
+```
+❌ 错误（笼统模板）:
+  「扭扭乐」（广场舞）: "Neon lights, dance silhouettes, vibrant contrasting colors"
+  → 和昨天「甩甩甩」的封面几乎一样
+
+✅ 正确（意象差异化）:
+  「扭扭乐」（广场舞）: 
+    extract visual=【左边大姐扭得欢，右边大哥跳得猛，张大妈穿了新裙子】
+    → "a middle-aged woman in a new dress doing the twist at a night market square, 
+       neon glow from a corner shop reflecting on her bright clothing, joyful sweat, 
+       another man in shiny leather shoes spinning, vibrant crowd atmosphere"
+
+  「甩甩甩」（广场舞）:
+    extract visual=【老张头扭得最欢，左脚踩呀右脚踩，音响开到最大声】
+    → "an old man dancing enthusiastically in a plaza, giant speakers behind him, 
+       feet stomping in sync with the beat, motion blur from the crowd around him"
+
+  → 同一曲风但画面完全不同
+```
+
+#### 各曲风歌词意象提取指引
+
+| 曲风 | 提取方向 | 画面感来源 |
+|:---|:---|:---|
+| ① 广场舞 | 找具体人物+动作细节 | 「李大妈跳得最狂」「大爷换了亮皮鞋」「汗水流了一身」|
+| ② 洗脑情歌 | 找浪漫互动场景 | 「奶茶店」「你穿着白色连衣裙」「手机快没电」「飞奔去见你」|
+| ③ 伤感情绪 | 找具象化思念物品 | 「杯子上的口红印」「你的拖鞋」「空面馆」「香水味围巾」|
+| ④ 国风古风 | 找古典物件 | 「铜镜」「玉簪子」「花轿」「撑伞的背影」|
+| ⑤ 家乡励志 | 找亲情/家乡符号 | 「妈的手擀面」「村口老槐树」「爸的锄头」「一屉热包子」|
+
+**完成每首歌词后，必须用 2-3 个具体歌词意象写 `cover_prompt`**，不要偷懒套模板。
 
 ⚠️ **目录格式**：`~/Music/番茄音乐/YYYY-MM-DD_歌名/`（日期前缀防止覆盖）
 ⚠️ **slug 格式**：`歌名_YYYY-MM-DD`（唯一标识）

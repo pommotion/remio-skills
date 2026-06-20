@@ -84,29 +84,11 @@ with ThreadPoolExecutor(max_workers=3) as pool:
 
 ---
 
-## 封面生成（⛔ 必须调用 regenerate_covers.py）
+## 封面生成
 
-**⛔ 绝对禁止**自行写 BizyAir API 调用、自行构造封面 prompt、使用 gcli2api/mmx image。
-
-### 封面风格规范（v4 五段式通感场景）
-脚本自动读取歌词文件，提取物件/动作写进 prompt。风格：英文电影摄影场景描述，暗色调电影质感，极简构图一个核心视觉主体，歌名中文文字自然融入场景元素。
-
-**禁止**出现 "album cover"、"design" 等设计指令词。
-
-### 唯一正确做法
-```python
-import subprocess, os
-VAULT = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault")
-PYTHON = "/opt/homebrew/bin/python3"
-songs = ["歌名1", "歌名2"]  # ← 替换
-cmd = [PYTHON, os.path.join(VAULT, "regenerate_covers.py"), "--run", "--songs"] + songs
-result = subprocess.run(cmd, cwd=VAULT, capture_output=True, text=True, timeout=1800)
-print(result.stdout[-2000:])
-```
-
-封面规格：bizyair-skill (GPT Image 2 via ModelZoo o2-t2i)，1:1 2048×2048。
-
-⛔ 封面脚本传入的 `--songs` 参数用**纯歌名**（不含日期前缀），脚本内部会自动匹配目录。
+⛔ **封面已移至任务 B。** A' 只负责音频生成，不生成封面。
+封面生成耗时约 8min/首（GPT Image 2），放在 A' 会导致总耗时逼近 30min RPC 上限。
+封面在任务 B 中海报生成之前自动执行，B 的 prompt 会引导处理。
 
 ---
 

@@ -4,6 +4,34 @@
 
 ---
 
+## 封面生成（⛔ 海报前置依赖，必须调用 regenerate_covers.py）
+
+> **封面从任务 A' 移到这里**（2026-06-19 重构）：封面每首约 8min（GPT Image 2），但 `regenerate_covers.py` 内部使用 `ThreadPoolExecutor` 并行（max_workers=5），3 首总耗时 ≈ 最慢的一首 ≈ 8min，不是 24min。移到 B 后，A' 只做音频（~2min），B 时间充裕。
+
+**⛔ 绝对禁止**自行写 BizyAir API 调用、自行构造封面 prompt、使用 gcli2api/mmx image。
+
+### 封面风格规范（v4 五段式通感场景）
+脚本自动读取歌词文件，提取物件/动作写进 prompt。风格：英文电影摄影场景描述，暗色调电影质感，极简构图一个核心视觉主体，歌名中文文字自然融入场景元素。
+
+**禁止**出现 "album cover"、"design" 等设计指令词。
+
+### 唯一正确做法
+```python
+import subprocess, os
+VAULT = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault")
+PYTHON = "/opt/homebrew/bin/python3"
+songs = ["歌名1", "歌名2"]  # ← 纯歌名，不含日期前缀，从 pending_audio.json 或 songs.json 获取
+cmd = [PYTHON, os.path.join(VAULT, "regenerate_covers.py"), "--run", "--songs"] + songs
+result = subprocess.run(cmd, cwd=VAULT, capture_output=True, text=True, timeout=1800)
+print(result.stdout[-2000:])
+```
+
+封面规格：bizyair-skill (GPT Image 2 via ModelZoo o2-t2i)，1:1 2048×2048。
+
+⛔ 封面脚本传入的 `--songs` 参数用**纯歌名**（不含日期前缀），脚本内部会自动匹配目录。
+
+---
+
 ## BeatPrints 海报生成
 
 对每首歌：

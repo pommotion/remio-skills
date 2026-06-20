@@ -133,19 +133,12 @@ with ThreadPoolExecutor(max_workers=5) as pool:
 
 **⛔ 必须调用 `regenerate_covers.py`**（复用 music-vault 的脚本），禁止自行写 API 调用。
 
-### 番茄专项封面提示词调整
+### ⚠️ 封面提示词来源
 
-`regenerate_covers.py` 会自动从歌词提取意象。但番茄专项需要额外风格化：
+**从 `tomato_audio.json` 每首歌的 `cover_prompt` 字段读取**（Task T-A 已为每首歌生成了差异化提示词）。
+不再使用硬编码字典。
 
-| 曲风 | 封面视觉方向 |
-|:---|:---|
-| ① 广场舞 | 霓虹灯 / 舞蹈剪影 / 鲜艳对比色 |
-| ② 洗脑情歌 | 糖果色 / 少女风 / 可爱手绘 |
-| ③ 伤感情绪 | 雨夜 / 窗台 / 冷色调 / 孤独感 |
-| ④ 国风古风 | 水墨 / 扇面 / 古典纹样 / 朱砂 |
-| ⑤ 家乡励志 | 田野 / 老屋 / 暖色调 / 夕阳 |
-
-⚠️ 封面规格：1:1 方形，**双文件输出**：
+封面规格：1:1 方形，**双文件输出**：
 - **`cover_{title}.jpg`** = 1024×1024（网页版，体积小，用于 tomato.1986318.xyz 网站，不影响加载速度）
 - **`cover_{title}_2048.jpg`** = 2048×2048（上传版，用于番茄音乐平台上传，满足 ≥1440×1440 要求）
 
@@ -170,15 +163,7 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 generate_one = mod.generate_one
 
-# 番茄封面提示词（按曲风）
-COVER_PROMPTS = {
-    "dance": "Album cover art for a Chinese square dance song. Neon lights, dance silhouettes, vibrant contrasting colors, energetic party atmosphere, DJ vibe, dynamic composition, 1:1 square format",
-    "viral_pop": "Album cover art for a sweet Chinese pop love song. Candy colors, cute girly aesthetic, hand-drawn style, hearts and sweets, pastel pink background, kawaii style, 1:1 square format",
-    "sad": "Album cover art for an emotional Chinese sad ballad. Rainy night, window sill, cold blue tones, lonely atmosphere, melancholic mood, minimalist design, 1:1 square format",
-    "guofeng": "Album cover art for a Chinese traditional guofeng song. Chinese ink painting style, red seal stamps, plum blossom, ancient fan pattern, vermillion accents on rice paper texture, elegant and atmospheric, 1:1 square format",
-    "hometown": "Album cover art for a Chinese folk hometown song. Warm sunset countryside, old village house with a glowing lamp, field landscape, nostalgic warm tones, emotional and heartfelt, 1:1 square format",
-}
-
+# ⚠️ cover_prompt 从数据源的每首歌读取，不再用硬编码字典
 with open(VAULT_TOMATO / "data/tomato_audio.json") as f:
     data = json.load(f)
 
@@ -188,9 +173,9 @@ with open(VAULT_TOMATO / "data/tomato_audio.json") as f:
 def gen_one_cover(song):
     """单首封面生成 worker（含 1 次重试）"""
     title = song["title"]
-    genre_code = song["genre_code"]
     song_dir = song["song_dir"]
-    prompt = COVER_PROMPTS[genre_code]
+    # ⚠️ cover_prompt 是 T-A 阶段为一首歌定制的差异化提示词
+    prompt = song.get("cover_prompt", "Album cover art, 1:1 square format")
     out_path = os.path.join(song_dir, f"cover_{title}.jpg")
     if os.path.exists(out_path):
         return {"title": title, "ok": True, "skipped": True}
@@ -202,10 +187,15 @@ def gen_one_cover(song):
     if result["ok"]:
         from PIL import Image
         img = Image.open(tmp_path)
+        # ⚡ 分辨率兜底：BizyAir 2K 实际可能返回 1254~2560 不等
+        # 强制放大到 2048×2048（Lanczos 重采样），保证 _2048 文件名副其实
+        if img.size[0] < 2048:
+            img = img.resize((2048, 2048), Image.LANCZOS)
+        img_2048 = img.copy()
         img_1024 = img.resize((1024, 1024), Image.LANCZOS)
         img_1024.save(out_path, "JPEG", quality=90)
         out_2048 = out_path.replace('.jpg', '_2048.jpg')
-        shutil.copy2(tmp_path, out_2048)
+        img_2048.save(out_2048, "JPEG", quality=95)
         size_1024 = os.path.getsize(out_path) // 1024
         size_2048 = os.path.getsize(out_2048) // 1024
         return {"title": title, "ok": True, "msg": f"1024 ({size_1024}KB) + 2048 ({size_2048}KB) in {result['elapsed']:.0f}s"}
