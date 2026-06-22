@@ -29,27 +29,40 @@
 
 ## ⛔ 歌名去重（强制执行，Phase 1 选题前必走）
 
-### 去重策略：全历史 + 7 天双重
+### 去重策略：全历史 + NoCoDB 跨源 + 7 天三重
 
 | 窗口 | 数据源 | 维度 |
 |------|--------|------|
-| **全历史** | 读 `tomato-vault/data/songs.json` 全量歌名 | 歌名 |
+| **全历史（本地）** | 读 `tomato-vault/data/songs.json` 全量歌名 | 歌名 |
+| **NoCoDB 跨源** | GET `http://192.168.50.78:8086/api/v2/tables/m1h9q409553efne/records?fields=Title&limit=1000` | 歌名 |
 | **7 天** | `search_notes(query="🎵 番茄档案", time_filter={start:"<今天-7天>"})` | 歌名 |
 
 ### 执行步骤（必须按序）
 
 1. 读取 `tomato-vault/data/songs.json`（不存在则跳过，视为首日）
 2. 提取所有 `title` 字段，构建全量已用歌名集合
-3. `search_notes(query="🎵 番茄档案", time_filter={start:"<今天-7天>"})` → 收 7 天内已用（二次确认）
-4. 全量集合 ∪ 7 天集合 = **黑名单**
-5. 为 5 种曲风各选 1 个歌名，全部与黑名单对比
-6. **⛔ 重复的歌名必须重新命名**
+3. **NoCoDB 跨源查询**（获取 n8n-nas920 生产线已生成的歌名）：
+   ```python
+   import requests
+   resp = requests.get(
+       "http://192.168.50.78:8086/api/v2/tables/m1h9q409553efne/records",
+       params={"fields": "Title", "limit": 1000},
+       headers={"xc-token": "nc_pat_5MK26xPIoPvck6oiHpDCC2JdBZ2arc2Pgc4TFeSp"},
+       timeout=5
+   )
+   nocodb_titles = {r["Title"] for r in resp.json()["list"]}
+   ```
+   ⚠️ 如果 NoCoDB 不可达（超时/错误），跳过此步但不阻塞流程（降级为本地去重）
+4. `search_notes(query="🎵 番茄档案", time_filter={start:"<今天-7天>"})` → 收 7 天内已用（二次确认）
+5. 全量集合 ∪ NoCoDB集合 ∪ 7天集合 = **黑名单**
+6. 为 5 种曲风各选 1 个歌名，全部与黑名单对比
+7. **⛔ 重复的歌名必须重新命名**
 
 ### 任务头部输出（每次必须）
 
 ```
 🍅 番茄专项去重报告：
-全历史已用歌名 N 首；7天内已用 M 首
+全历史已用歌名 N 首；NoCoDB跨源 M 首；7天内已用 K 首
 本次选择：
   ① 广场舞: [歌名]
   ② 洗脑情歌: [歌名]
@@ -304,6 +317,54 @@ cover_prompt = [歌名物化为物件] + [歌词中2-3个具体画面元素] + [
 ⚠️ **slug 格式**：`歌名_YYYY-MM-DD`（唯一标识）
 
 写入路径：`tomato-vault/data/tomato_audio.json`
+
+### NoCoDB 写入（⭐ 新增，必须执行）
+
+在写入 `tomato_audio.json` 之后，将 5 首歌的元数据同步写入 NoCoDB `tomato-music` 表：
+
+```python
+import requests
+
+NOCODB_URL = "http://192.168.50.78:8086"
+NOCODB_TOKEN = "nc_pat_5MK26xPIoPvck6oiHpDCC2JdBZ2arc2Pgc4TFeSp"
+TABLE_ID = "m1h9q409553efne"
+
+records = []
+for song in songs:  # tomato_audio.json 的 5 首歌
+    record = {
+        "Title":      song["title"],
+        "Slug":       song["slug"],
+        "Lyrics":     song["lyrics"],
+        "Date":       song["date"],
+        "GenreCode":  song["genre_code"],
+        "GenreLabel": song["genre_label"],
+        "BPM":        song["bpm"],
+        "Chord":      song["chord"],
+        "Duration":   0,  # 生成时尚不知道，T-B 后处理时更新
+        "MmxPrompt":  song["mmx_prompt"],
+        "CoverPrompt":song["cover_prompt"],
+        "Source":     "remio-mac",
+        "Machine":    "Mac-M4-Pro",
+        "FilePath":   song["song_dir"],
+        "CoverPath":  "",  # T-B 后处理时更新
+        "HasLrc":     False,
+        "HasPoster":  False,
+        "NoteId":     song.get("note_id", ""),
+        "GenreIcon":  "",  # 从 genre_code 映射
+    }
+    records.append(record)
+
+resp = requests.post(
+    f"{NOCODB_URL}/api/v2/tables/{TABLE_ID}/records",
+    json=records,
+    headers={"xc-token": NOCODB_TOKEN},
+    timeout=10
+)
+assert resp.status_code == 200, f"NoCoDB写入失败: {resp.text}"
+print(f"✅ NoCoDB写入成功: {len(records)} 条")
+```
+
+⚠️ 如果 NoCoDB 不可达，跳过但不阻塞流程（本地数据不受影响）
 
 ---
 
