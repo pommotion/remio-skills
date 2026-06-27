@@ -24,6 +24,8 @@
 
 单首失败不阻塞，超时600s。
 
+⛔ **mmx 失败处理铁律**：任何 mmx 错误（code 1/5/6/网络/超时）→ 等 30s → 重试 1 次 → 还失败就跳过该首歌。**禁止排查代理、网络配置、vibe-isla、mmx config 等**，也不允许单独用 bash 调 mmx 测试。全在 `generate_one_song` 内完成。
+
 ### 输出目录（番茄专项）
 
 ```
@@ -38,7 +40,7 @@
 > mmx CLI 每个进程是独立 HTTP API 客户端，API 侧无并发限制 → 5 首同时跑，总耗时 ≈ 最慢的一首 ≈ 3-5min。
 
 ```python
-import subprocess, os, json
+import subprocess, os, json, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 VAULT = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/tomato-vault")
@@ -98,8 +100,22 @@ def generate_one_song(song):
     ], capture_output=True, text=True, timeout=600, env=MMX_ENV)
     
     if result.returncode != 0:
-        print(f"❌ {title} mmx 失败: {result.stderr[:200]}")
-        return (title, False)
+        print(f"⚠️ {title} mmx 第1次失败: {result.stderr[:200]}")
+        print(f"   等 30s 后重试...")
+        time.sleep(30)
+        result2 = subprocess.run([
+            MMX, "music", "generate",
+            "--prompt", song["mmx_prompt"],
+            "--lyrics-file", lyrics_path,
+            "--model", "music-2.6",
+            "--out", out_path
+        ], capture_output=True, text=True, timeout=600, env=MMX_ENV)
+        if result2.returncode != 0:
+            print(f"❌ {title} mmx 重试后仍失败: {result2.stderr[:200]}")
+            return (title, False)
+        else:
+            print(f"✅ {title} mmx 重试成功")
+            result = result2  # 用重试结果继续走时长校验
     
     ok = check_duration(out_path, attempt=1)
     if not ok:

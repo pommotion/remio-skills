@@ -17,6 +17,8 @@
 - Body: {"prompt": prompt, "aspect_ratio": "1:1", "resolution": "2K"}
 - 耗时约 60-180s，API 付费
 
+> ⚠️ **BizyAir API Key**（硬编码，scheduler 子进程不继承 zshrc）：`sk-hpncrzwkqyghhzqxpvpawdorfszsykrbbquioohhrloaovzi`
+
 > ⚠️ 旧版 /w/v1/webapp/task/openapi/create（同步 webapp 接口）已废弃：
 > bozo-aigc 同步模式 + 无重试控制 → 超时重试导致重复提交（2026-06-02 2200 2800 积分根因）
 > 现在统一走 ModelZoo 异步 API。
