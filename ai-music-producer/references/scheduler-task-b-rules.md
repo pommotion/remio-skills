@@ -6,7 +6,9 @@
 
 ## 封面生成（⛔ 海报前置依赖，必须调用 regenerate_covers.py）
 
-> **封面从任务 A' 移到这里**（2026-06-19 重构）：封面每首约 8min（GPT Image 2），但 `regenerate_covers.py` 内部使用 `ThreadPoolExecutor` 并行（max_workers=5），3 首总耗时 ≈ 最慢的一首 ≈ 8min，不是 24min。移到 B 后，A' 只做音频（~2min），B 时间充裕。
+> **2026-06-28 异步改造**：A' 阶段已异步提交封面任务（request_id 写入 `pending_covers.json`）。
+> B 阶段现在只需 **查询 + 下载**，无需再等待生成——秒级完成。
+> **回退**：如果 `pending_covers.json` 不存在或全部 fetch 失败，回退到同步模式。
 
 **⛔ 绝对禁止**自行写 BizyAir API 调用、自行构造封面 prompt、使用 gcli2api/mmx image。
 
@@ -15,20 +17,47 @@
 
 **禁止**出现 "album cover"、"design" 等设计指令词。
 
-### 唯一正确做法
+### ✅ 正确做法（优先 fetch，回退同步）
+
 ```python
-import subprocess, os
+import subprocess, os, json, sys
 VAULT = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault")
-PYTHON = "/opt/homebrew/bin/python3"
-songs = ["歌名1", "歌名2"]  # ← 纯歌名，不含日期前缀，从 pending_audio.json 或 songs.json 获取
-cmd = [PYTHON, os.path.join(VAULT, "regenerate_covers.py"), "--run", "--songs"] + songs
-result = subprocess.run(cmd, cwd=VAULT, capture_output=True, text=True, timeout=1800)
-print(result.stdout[-2000:])
+PYTHON = sys.executable
+PENDING = os.path.join(VAULT, "data/pending_covers.json")
+
+if os.path.exists(PENDING):
+    # ✅ 异步模式：A' 已提交，B 只需 fetch（秒级）
+    print("📥 Fetching covers from async submissions...")
+    result = subprocess.run(
+        [PYTHON, os.path.join(VAULT, "regenerate_covers.py"), "--fetch"],
+        cwd=VAULT, capture_output=True, text=True, timeout=300)
+    print(result.stdout[-2000:])
+    if result.returncode != 0:
+        print(f"⚠️ fetch 失败，回退到同步模式")
+        # 回退：同步生成
+        songs = ["歌名1", "歌名2"]  # 从 pending_audio.json 获取
+        result = subprocess.run(
+            [PYTHON, os.path.join(VAULT, "regenerate_covers.py"), "--run", "--songs"] + songs,
+            cwd=VAULT, capture_output=True, text=True, timeout=1800)
+        print(result.stdout[-2000:])
+else:
+    # 回退：同步生成（A' 未提交或 pending_covers.json 丢失）
+    print("⚠️ pending_covers.json 不存在，回退到同步模式")
+    songs = ["歌名1", "歌名2"]  # 从 pending_audio.json 获取
+    cmd = [PYTHON, os.path.join(VAULT, "regenerate_covers.py"), "--run", "--songs"] + songs
+    result = subprocess.run(cmd, cwd=VAULT, capture_output=True, text=True, timeout=1800)
+    print(result.stdout[-2000:])
 ```
 
-封面规格：bizyair-skill (GPT Image 2 via ModelZoo o2-t2i)，1:1 2048×2048。
+封面规格：bizyair-skill (GPT Image 2 via ModelZoo o2-t2i)，1:1 2048×2048。脚本内置分辨率兜底（Pillow Lanczos 放大不足 2048 的图片）。
 
 ⛔ 封面脚本传入的 `--songs` 参数用**纯歌名**（不含日期前缀），脚本内部会自动匹配目录。
+
+⛔ **封面生成铁律**：
+- 必须调用 `regenerate_covers.py`，禁止自行写 API 调用、禁止用 mmx/gcli/ListenHub/generate_image 等其他工具替代
+- BizyAir 失败（429 限额/停服/超时）→ 记录失败，在报告中标记，**禁止用其他工具补图**
+- 6/30 BizyAir 停服前需迁移到新方案，迁移完成前封面可能批量失败，这是可接受的
+
 
 ---
 

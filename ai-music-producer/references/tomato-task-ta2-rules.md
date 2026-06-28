@@ -147,7 +147,31 @@ with ThreadPoolExecutor(max_workers=5) as pool:
 
 ## 封面生成
 
-**⛔ 必须调用 `regenerate_covers.py`**（复用 music-vault 的脚本），禁止自行写 API 调用。
+### ⚡ 异步提交模式（2026-06-28 改造）
+
+> **异步改造**：T-A' 只**提交** BizyAir 任务拿 request_id（< 5s/首），不等待。
+> T-B 阶段再查询下载。效果：T-A' 省掉 2-3min 同步等待。
+
+音频生成完后，追加执行封面提交：
+
+```python
+import subprocess, os, sys
+VAULT = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault")
+PYTHON = sys.executable
+# 提交封面任务（异步，< 5s/首），写入 tomato-vault/data/pending_covers.json
+result = subprocess.run(
+    [PYTHON, os.path.join(VAULT, "regenerate_covers.py"), "--submit", "--source", "tomato"],
+    cwd=VAULT, capture_output=True, text=True, timeout=120)
+print(result.stdout[-2000:])
+if result.returncode != 0:
+    print(f"⚠️ 封面提交失败: {result.stderr[-500:]}")
+    # 不阻塞——T-B 会发现 pending_covers.json 不存在，回退到同步模式
+```
+
+⛔ **封面提交铁律**：
+- 提交失败不阻塞音频结果，在报告中标记即可
+- T-B 阶段会发现 pending_covers.json 不存在，回退到同步模式
+- BizyAir 失败（429 限额/停服/超时）→ 记录失败，**禁止用其他工具补图**
 
 ### ⚠️ 封面提示词来源
 
@@ -158,78 +182,7 @@ with ThreadPoolExecutor(max_workers=5) as pool:
 - **`cover_{title}.jpg`** = 1024×1024（网页版，体积小，用于 tomato.1986318.xyz 网站，不影响加载速度）
 - **`cover_{title}_2048.jpg`** = 2048×2048（上传版，用于番茄音乐平台上传，满足 ≥1440×1440 要求）
 
-GPT Image 2 via BizyAir ModelZoo，`resolution=2K` 直接出 2048×2048。`generate_one` 已内置 sips center-crop 兜底（下载后自动裁方）。
-
-### 调用方式
-
-```python
-import subprocess, os, json, time, shutil
-from pathlib import Path
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-VAULT_TOMATO = Path.home() / "Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/tomato-vault"
-
-# ⚠️ 不复用 regenerate_covers.py（绑定 music-vault 的 songs.json，不支持 TOMATO_MODE）
-# 直接复用 generate_one 函数
-VAULT_MUSIC = Path.home() / "Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault"
-import importlib.util
-spec = importlib.util.spec_from_file_location("regen_covers", str(VAULT_MUSIC / "regenerate_covers.py"))
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-generate_one = mod.generate_one
-
-# ⚠️ cover_prompt 从数据源的每首歌读取，不再用硬编码字典
-with open(VAULT_TOMATO / "data/tomato_audio.json") as f:
-    data = json.load(f)
-
-# ⚡ 并行生成封面（ThreadPoolExecutor）
-# 根因修复：串行 5 首封面 ≈ 10-15min，叠加音频生成极易超时 30min
-# 并行后 5 首同时跑，总耗时 ≈ 最慢的一首 ≈ 2-3min
-def gen_one_cover(song):
-    """单首封面生成 worker（含 1 次重试）"""
-    title = song["title"]
-    song_dir = song["song_dir"]
-    # ⚠️ cover_prompt 是 T-A 阶段为一首歌定制的差异化提示词
-    prompt = song.get("cover_prompt", "Album cover art, 1:1 square format")
-    out_path = os.path.join(song_dir, f"cover_{title}.jpg")
-    if os.path.exists(out_path):
-        return {"title": title, "ok": True, "skipped": True}
-    tmp_path = f"/tmp/cover_tomato_{title}.jpg"
-    result = generate_one(prompt, tmp_path)
-    if not result["ok"]:
-        time.sleep(5)
-        result = generate_one(prompt, tmp_path)
-    if result["ok"]:
-        from PIL import Image
-        img = Image.open(tmp_path)
-        # ⚡ 分辨率兜底：BizyAir 2K 实际可能返回 1254~2560 不等
-        # 强制放大到 2048×2048（Lanczos 重采样），保证 _2048 文件名副其实
-        if img.size[0] < 2048:
-            img = img.resize((2048, 2048), Image.LANCZOS)
-        img_2048 = img.copy()
-        img_1024 = img.resize((1024, 1024), Image.LANCZOS)
-        img_1024.save(out_path, "JPEG", quality=90)
-        out_2048 = out_path.replace('.jpg', '_2048.jpg')
-        img_2048.save(out_2048, "JPEG", quality=95)
-        size_1024 = os.path.getsize(out_path) // 1024
-        size_2048 = os.path.getsize(out_2048) // 1024
-        return {"title": title, "ok": True, "msg": f"1024 ({size_1024}KB) + 2048 ({size_2048}KB) in {result['elapsed']:.0f}s"}
-    else:
-        return {"title": title, "ok": False, "error": result["error"][:80]}
-
-tasks_batch = [s for s in data["songs"]]
-with ThreadPoolExecutor(max_workers=5) as pool:
-    futures = {pool.submit(gen_one_cover, s): s for s in tasks_batch}
-    for fut in as_completed(futures):
-        r = fut.result()
-        if r.get("skipped"):
-            print(f"⏭️  {r['title']} 封面已存在")
-        elif r["ok"]:
-            print(f"   ✅ {r['title']}: {r['msg']}")
-        else:
-            print(f"   ❌ {r['title']}: {r['error']}")
-```
+GPT Image 2 via BizyAir ModelZoo，`resolution=2K` 直接出 2048×2048。fetch 模式已内置 Pillow 分辨率兜底。
 
 ---
 

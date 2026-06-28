@@ -87,8 +87,33 @@ with ThreadPoolExecutor(max_workers=3) as pool:
 ## 封面生成
 
 ⛔ **封面已移至任务 B。** A' 只负责音频生成，不生成封面。
-封面生成耗时约 8min/首（GPT Image 2），放在 A' 会导致总耗时逼近 30min RPC 上限。
-封面在任务 B 中海报生成之前自动执行，B 的 prompt 会引导处理。
+
+### ⚡ 异步封面提交（A' 阶段）
+
+> **2026-06-28 异步改造**：A' 在音频生成后，**只提交** BizyAir 任务拿 request_id（< 5s/首），
+> 不等待图片生成完成。B 阶段再查询下载。
+> 效果：A' 省掉 8min 同步等待 → 总耗时从 ~12min 降到 ~5min。
+
+音频生成完后，追加执行封面提交：
+
+```python
+import subprocess, os, sys
+VAULT = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault")
+PYTHON = sys.executable
+# 提交封面任务（异步，< 5s/首），写入 pending_covers.json
+result = subprocess.run(
+    [PYTHON, os.path.join(VAULT, "regenerate_covers.py"), "--submit"],
+    cwd=VAULT, capture_output=True, text=True, timeout=120)
+print(result.stdout[-2000:])
+if result.returncode != 0:
+    print(f"⚠️ 封面提交失败: {result.stderr[-500:]}")
+    # 不阻塞——B 阶段会发现 pending_covers.json 不存在，回退到同步模式
+```
+
+⛔ **封面提交铁律**：
+- 提交失败不阻塞音频结果，在报告中标记即可
+- B 阶段会发现 pending_covers.json 不存在，回退到同步模式
+- BizyAir 失败（429 限额/停服/超时）→ 记录失败，**禁止用其他工具补图**
 
 ---
 

@@ -12,6 +12,31 @@
 
 ---
 
+## 封面下载（⚡ 异步 fetch，2026-06-28 改造）
+
+> T-A' 已异步提交封面任务（request_id 在 `tomato-vault/data/pending_covers.json`）。
+> T-B 只需查询 + 下载（秒级完成）。回退：pending_covers.json 不存在则跳过（封面由 T-A' 同步生成）。
+
+```python
+import subprocess, os, sys, json
+VAULT = os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/music-vault")
+PYTHON = sys.executable
+PENDING = os.path.join(
+    os.path.expanduser("~/Library/Application Support/remio/Users/F2313D5DDFE8FCF316DC1149F06BB14B/agent/tomato-vault/data"),
+    "pending_covers.json")
+
+if os.path.exists(PENDING):
+    print("📥 Fetching covers from async submissions...")
+    result = subprocess.run(
+        [PYTHON, os.path.join(VAULT, "regenerate_covers.py"), "--fetch", "--source", "tomato"],
+        cwd=VAULT, capture_output=True, text=True, timeout=300)
+    print(result.stdout[-2000:])
+else:
+    print("ℹ️ pending_covers.json 不存在，封面可能已在 T-A' 同步生成")
+```
+
+---
+
 ## BeatPrints 海报生成
 
 对每首歌：
