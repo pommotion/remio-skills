@@ -6,11 +6,12 @@
 
 ## 封面生成（⛔ 海报前置依赖，必须调用 regenerate_covers.py）
 
-> **2026-06-28 异步改造**：A' 阶段已异步提交封面任务（request_id 写入 `pending_covers.json`）。
-> B 阶段现在只需 **查询 + 下载**，无需再等待生成——秒级完成。
-> **回退**：如果 `pending_covers.json` 不存在或全部 fetch 失败，回退到同步模式。
+> **2026-06-30 BizyAir 停服迁移**：封面生成从 BizyAir 切换到 ListenHub (provider=openai → GPT Image 2)，
+> Lovart (generate_image_gpt_image_2) 作为 fallback。由 image_provider.py 统一调度。
+> submit 现在是同步生成（保存到临时目录），fetch 从临时目录复制。调用方式不变。
+> BizyAir 恢复后改回（见 regenerate_covers.py 注释保留的原始代码）。
 
-**⛔ 绝对禁止**自行写 BizyAir API 调用、自行构造封面 prompt、使用 gcli2api/mmx image。
+**⛔ 绝对禁止**自行写 API 调用、自行构造封面 prompt、使用 gcli2api/mmx image。
 
 ### 封面风格规范（v4 五段式通感场景）
 脚本自动读取歌词文件，提取物件/动作写进 prompt。风格：英文电影摄影场景描述，暗色调电影质感，极简构图一个核心视觉主体，歌名中文文字自然融入场景元素。
@@ -49,14 +50,15 @@ else:
     print(result.stdout[-2000:])
 ```
 
-封面规格：bizyair-skill (GPT Image 2 via ModelZoo o2-t2i)，1:1 2048×2048。脚本内置分辨率兜底（Pillow Lanczos 放大不足 2048 的图片）。
+封面规格：ListenHub (GPT Image 2 via provider=openai)，1:1 2048×2048。Lovart (generate_image_gpt_image_2) 作为 fallback。脚本内置分辨率兜底（Pillow Lanczos 放大不足 2048 的图片）。
 
 ⛔ 封面脚本传入的 `--songs` 参数用**纯歌名**（不含日期前缀），脚本内部会自动匹配目录。
 
 ⛔ **封面生成铁律**：
 - 必须调用 `regenerate_covers.py`，禁止自行写 API 调用、禁止用 mmx/gcli/ListenHub/generate_image 等其他工具替代
 - BizyAir 失败（429 限额/停服/超时）→ 记录失败，在报告中标记，**禁止用其他工具补图**
-- 6/30 BizyAir 停服前需迁移到新方案，迁移完成前封面可能批量失败，这是可接受的
+- ListenHub/Lovart 全部失败同理 → 记录失败，不补图
+- BizyAir 停服期间（2026-06-30 起）封面通过 ListenHub→Lovart 链路生成
 
 
 ---

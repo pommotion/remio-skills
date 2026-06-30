@@ -90,9 +90,10 @@ with ThreadPoolExecutor(max_workers=3) as pool:
 
 ### ⚡ 异步封面提交（A' 阶段）
 
-> **2026-06-28 异步改造**：A' 在音频生成后，**只提交** BizyAir 任务拿 request_id（< 5s/首），
-> 不等待图片生成完成。B 阶段再查询下载。
-> 效果：A' 省掉 8min 同步等待 → 总耗时从 ~12min 降到 ~5min。
+> **2026-06-30 BizyAir 停服迁移**：封面生成从 BizyAir 切换到 ListenHub (provider=openai → GPT Image 2)，
+> Lovart (generate_image_gpt_image_2) 作为 fallback。由 image_provider.py 统一调度。
+> submit_one 现在是同步生成（保存到临时目录），fetch_one 从临时目录复制。API 不变。
+> BizyAir 恢复后改回异步模式（见 regenerate_covers.py 注释保留的原始代码）。
 
 音频生成完后，追加执行封面提交：
 
@@ -114,6 +115,7 @@ if result.returncode != 0:
 - 提交失败不阻塞音频结果，在报告中标记即可
 - B 阶段会发现 pending_covers.json 不存在，回退到同步模式
 - BizyAir 失败（429 限额/停服/超时）→ 记录失败，**禁止用其他工具补图**
+- ListenHub/Lovart 失败同理 → 记录失败，不补图
 
 ---
 

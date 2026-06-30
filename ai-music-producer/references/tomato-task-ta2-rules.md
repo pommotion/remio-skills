@@ -149,8 +149,10 @@ with ThreadPoolExecutor(max_workers=5) as pool:
 
 ### ⚡ 异步提交模式（2026-06-28 改造）
 
-> **异步改造**：T-A' 只**提交** BizyAir 任务拿 request_id（< 5s/首），不等待。
-> T-B 阶段再查询下载。效果：T-A' 省掉 2-3min 同步等待。
+> **2026-06-30 BizyAir 停服迁移**：封面生成从 BizyAir 切换到 ListenHub (provider=openai → GPT Image 2)，
+> Lovart (generate_image_gpt_image_2) 作为 fallback。由 image_provider.py 统一调度。
+> submit 现在是同步生成（保存到临时目录），fetch 从临时目录复制。调用方式不变。
+> BizyAir 恢复后改回（见 regenerate_covers.py 注释保留的原始代码）。
 
 音频生成完后，追加执行封面提交：
 
@@ -172,6 +174,7 @@ if result.returncode != 0:
 - 提交失败不阻塞音频结果，在报告中标记即可
 - T-B 阶段会发现 pending_covers.json 不存在，回退到同步模式
 - BizyAir 失败（429 限额/停服/超时）→ 记录失败，**禁止用其他工具补图**
+- ListenHub/Lovart 失败同理 → 记录失败，不补图
 
 ### ⚠️ 封面提示词来源
 
@@ -182,7 +185,7 @@ if result.returncode != 0:
 - **`cover_{title}.jpg`** = 1024×1024（网页版，体积小，用于 tomato.1986318.xyz 网站，不影响加载速度）
 - **`cover_{title}_2048.jpg`** = 2048×2048（上传版，用于番茄音乐平台上传，满足 ≥1440×1440 要求）
 
-GPT Image 2 via BizyAir ModelZoo，`resolution=2K` 直接出 2048×2048。fetch 模式已内置 Pillow 分辨率兜底。
+GPT Image 2 via ListenHub (provider=openai)，Lovart 作为 fallback。脚本内置 Pillow 分辨率兜底。
 
 ---
 
