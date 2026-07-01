@@ -94,7 +94,7 @@ print('、'.join(titles))  # 只输出歌名，不输出完整 JSON
 
 ### 路径 B：全手写歌词（默认路径）
 
-用 **SiliconFlow** (`nex-agi/Nex-N2-Pro`) 创作完整歌词；SiliconFlow 不可用则 fallback DeepSeek。遵循以下结构模板：
+用 **new-api → Nex-N2-Pro** (`nex-agi/Nex-N2-Pro`) 创作完整歌词；Nex-N2-Pro 不可用则 fallback new-api → DeepSeek-V4-Pro。遵循以下结构模板：
 
 ```
 请创作一首完整的歌词，严格遵循以下结构和行数要求：
@@ -121,7 +121,7 @@ print('、'.join(titles))  # 只输出歌名，不输出完整 JSON
 
 **⛔ 必须使用 DeepSeek 模型执行诗化审核，禁止使用 GLM。**
 
-DeepSeek 对「短句」规则的执行更克制，不会过度压缩行长。GLM 会把正常句子极端压缩成 2-4 字碎片。SiliconFlow 不做诗化审核（它是创作用的）。
+DeepSeek 对「短句」规则的执行更克制，不会过度压缩行长。GLM 会把正常句子极端压缩成 2-4 字碎片。Nex-N2-Pro 不做诗化审核（它是创作用的）。
 
 作为「词境审核师」审核整首歌词。规则：
 
