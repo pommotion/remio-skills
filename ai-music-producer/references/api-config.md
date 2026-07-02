@@ -25,7 +25,7 @@ def read_env(name):
 | # | API | Base URL | Model | Key |
 |---|-----|----------|-------|-----|
 | 1 | new-api → SiliconFlow（⚠️ 优先） | `http://192.168.50.78:3003/v1/` | `nex-agi/Nex-N2-Pro` | `NEWAPI_KEY`（见下） |
-| 2 | new-api → DeepSeek | `http://192.168.50.78:3003/v1/` | `deepseek-ai/DeepSeek-V4-Pro` | `NEWAPI_KEY`（见下） |
+| 2 | new-api → DeepSeek | `http://192.168.50.78:3003/v1/` | `deepseek-v4-pro` | `NEWAPI_KEY`（见下） |
 | 3 | GLM（智谱） | `https://open.bigmodel.cn/api/coding/paas/v4/` | `glm-5.1` | `read_env('GLM_API_KEY')` |
 | 4 | MiniMax | `https://api.minimaxi.com/v1/chat/completions` | `MiniMax-M3` | `json.load(open(os.path.expanduser('~/.mmx/config.json')))['api_key']` |
 | 5 | DeepSeek（直连兜底） | `https://api.deepseek.com/chat/completions` | `deepseek-chat` | `read_env('DEEPSEEK_API_KEY')` |
@@ -43,7 +43,7 @@ NEWAPI_BASE = "http://192.168.50.78:3003/v1"
 | 环节 | 主力 API | Fallback | 模型 | 为什么选它 |
 |------|---------|----------|------|-----------|
 | **歌词创作** | new-api → SiliconFlow | new-api → DeepSeek-V4-Pro → MiniMax | `nex-agi/Nex-N2-Pro` | 响应快 ~7s、中文质量好、无 reasoning_content 膨胀 |
-| **诗化审核** | new-api → DeepSeek-V4-Pro（⛔ 强制） | 无（禁止 GLM） | `deepseek-ai/DeepSeek-V4-Pro` | 对短句规则执行克制，不过度压缩行长 |
+| **诗化审核** | new-api → DeepSeek-V4-Pro（⛔ 强制） | 无（禁止 GLM） | `deepseek-v4-pro` | 对短句规则执行克制，不过度压缩行长 |
 | **Phase 0 探测** | new-api → Nex-N2-Pro + DeepSeek-V4-Pro | — | 两个都要测 | 只测实际会用的，不浪费时间 |
 
 ⚠️ **new-api → Nex-N2-Pro**：无 reasoning_content 问题，响应快（~7s），中文质量好。歌词创作首选。
